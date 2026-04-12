@@ -1,0 +1,20 @@
+# Virtual environments
+venv/
+env/
+.env
+
+# Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs
+.vscode/
+.idea/
+
+# Data and Indices
+faiss_index/
+
+# OS generated files
+.DS_Store
+Thumbs.db
