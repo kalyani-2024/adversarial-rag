@@ -200,7 +200,9 @@ def build_graph(llm: LLMClient, retriever: HybridRetriever):
                 return {"judge_error": exc.message}
             trace.record_llm(resp, "judge")
             span.set(verdict=result.verdict, faithfulness=result.faithfulness,
-                     relevance=result.relevance, completeness=result.completeness)
+                     relevance=result.relevance, completeness=result.completeness,
+                     failed_checks=",".join(result.failed_checks) or "none",
+                     unsupported_claims=len(result.unsupported_claims))
         attempts[-1] = current.model_copy(update={"judge": result})
         return {"attempts": attempts}
 
