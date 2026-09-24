@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     max_retries: int = Field(2, ge=0, le=5)
 
     # --- Observability / service -------------------------------------------
+    # Load embedding + reranker models at startup so the first query is not ~8 s slower.
+    warmup_models: bool = True
     log_level: str = "INFO"
     log_json: bool = True
     cors_origins: list[str] = ["*"]

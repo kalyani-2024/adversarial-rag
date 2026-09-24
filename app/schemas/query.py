@@ -75,6 +75,7 @@ AnswerStatus = Literal["answered", "insufficient_evidence", "no_documents"]
 
 class QueryResponse(BaseModel):
     request_id: str
+    mode: Literal["adversarial", "baseline"]
     query: str
     retrieval_query: str
     query_rewritten: bool

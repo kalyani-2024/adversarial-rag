@@ -52,6 +52,7 @@ def settings(tmp_path) -> Settings:
         reranker_enabled=False,
         query_rewrite_enabled=False,
         log_json=False,
+        warmup_models=False,
     )
 
 
