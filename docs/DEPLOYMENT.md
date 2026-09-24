@@ -40,28 +40,47 @@ Two containers from one image (`APP_ROLE=api` / `APP_ROLE=ui`), a named volume `
 
 Why: the free CPU Space has enough RAM for PyTorch plus both models, runs any Dockerfile, and exposes one port, which `APP_ROLE=all` serves (API on 127.0.0.1:8000, Streamlit on the public `$PORT`). Because the UI calls the API inside the container, streaming and uploads don't pass through an extra proxy hop between them.
 
-1. Create a Space → SDK **Docker** → hardware **CPU basic**.
-2. Push this repository to the Space's git remote. The Space's `README.md` needs this front matter at the top (keep the rest of the README below it):
-   ```yaml
-   ---
-   title: RAG Reliability Lab
-   sdk: docker
-   app_port: 7860
-   ---
+**Steps**
+
+1. **Create an access token.** Go to huggingface.co → *Settings → Access Tokens* → new token with **Write** role.
+2. **Create the Space.** huggingface.co/new-space → any name (e.g. `rag-reliability-lab`) → SDK **Docker** → template *Blank* → hardware **CPU basic (free)** → visibility *Public* (or *Private* while testing).
+3. **Add secrets and variables** (Space → *Settings → Variables and secrets*):
+
+   | Name | Kind | Value |
+   |---|---|---|
+   | `GROQ_API_KEY` | **Secret** | your Groq key |
+   | `APP_PASSWORD` | **Secret** | a password for the demo (strongly recommended on a public Space) |
+   | `APP_ROLE` | Variable | `all` |
+   | `SEED_DIR` | Variable | `/app/seed_docs` |
+
+4. **Build the Space folder** from this repo. It copies only what the container needs, writes the Space README with the YAML header Spaces require, normalizes line endings, and refuses to run if a `.env` or index file would be included:
+   ```bash
+   python scripts/prepare_hf_space.py          # -> dist/hf-space/
    ```
-3. In *Settings → Variables and secrets* add:
-   - secret `GROQ_API_KEY`
-   - variable `APP_ROLE=all`
-   - variable `SEED_DIR=/app/seed_docs`
-4. The Space builds the Dockerfile and starts `scripts/entrypoint.sh`.
+5. **Upload it** (log in once; the token is entered in your terminal, never stored in the repo):
+   ```bash
+   pip install -U huggingface_hub
+   hf auth login                                # paste the Write token
+   hf upload <your-username>/<space-name> dist/hf-space . --repo-type space
+   ```
+   (Alternatively `git clone` the Space repo, copy `dist/hf-space/*` into it, commit and push.)
+6. **Wait for the build** (*Logs → Build*, typically several minutes: PyTorch CPU + models are baked into the image). When the container log shows `Uvicorn running on http://127.0.0.1:8000` and Streamlit's URL, open the Space, enter the password, and ask a question about the sample paper.
+7. **Redeploy after changes:** rerun steps 4–5.
+
+How the container behaves on Spaces:
+
+- **One container, one public port.** `APP_ROLE=all` starts the API on 127.0.0.1:8000 (not reachable from outside) and Streamlit on port 7860 (`app_port`).
+- **Password.** `APP_PASSWORD` gates the UI, and the UI is the only public entry point, so it also protects your Groq quota.
+- **Uploads inside an iframe.** Spaces display the app in an iframe on another domain, where Streamlit's XSRF cookie is not sent back, so uploads fail with HTTP 403. The single-container mode therefore defaults `STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false`, with the password gate as the access control.
 
 Caveats:
 
-- **Ephemeral disk and sleep.** Free Spaces sleep when idle and the disk is ephemeral: uploads vanish on restart, and an upload being indexed when the Space sleeps is marked failed. The seed paper is re-indexed automatically.
-- **Public by default.** Anyone can spend your Groq quota, so consider making the Space private or adding a shared-secret check.
-- **Upload size.** Upload limits in front of Streamlit on Spaces are outside this repo's control. Check that 100 MB uploads work there before relying on them.
+- **Ephemeral disk and sleep.** Free Spaces sleep after a period of inactivity and the disk is ephemeral: uploads vanish on restart, and an upload being indexed when the Space sleeps is marked failed. The seed paper is re-indexed automatically on every start. Persistent storage is a paid Space add-on (mount it and set `DATA_DIR` to it).
+- **Cold start.** The first visit after sleep waits for the container to boot and the models to warm up (roughly 30–60 s).
+- **Upload size.** Upload limits in front of Streamlit on Spaces are outside this repo's control. Check that large uploads work there before relying on 100 MB.
+- **CPU.** Indexing and reranking run on the Space's shared CPU; expect them to be slower than on a laptop.
 
-**Status:** the `APP_ROLE=all` container was tested locally with `docker run` (see below). I have not deployed it to a Space from this repository.
+**Status:** the Space folder produced by `prepare_hf_space.py` **builds** successfully with Docker. The password gate and XSRF setting were tested locally without Docker. The single-container mode itself was tested in run 1 of the verification log. The deployment to huggingface.co has not been done yet; it has to be done from your account.
 
 ## Option C: Render (documented, not tested)
 

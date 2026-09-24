@@ -6,6 +6,11 @@ set -eu
 
 PORT="${PORT:-7860}"
 
+# Hugging Face Spaces serve the app inside an iframe on another domain, where Streamlit's XSRF
+# cookie is not sent back, so file uploads fail with HTTP 403. Default the protection off in
+# this single-container mode (override by setting the variable), and use APP_PASSWORD to gate access.
+export STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION="${STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION:-false}"
+
 uvicorn api:app --host 127.0.0.1 --port 8000 &
 API_PID=$!
 

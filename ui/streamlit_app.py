@@ -11,6 +11,7 @@ the only HTML rendered is the markup we generate ourselves.
 
 from __future__ import annotations
 
+import hmac
 import html
 import os
 import re
@@ -33,6 +34,29 @@ def _api_base_url() -> str:
         return st.secrets["API_BASE_URL"]
     except Exception:
         return "http://localhost:8000"
+
+
+def _require_password() -> None:
+    """Optional shared password (APP_PASSWORD) for public deployments.
+
+    On a Hugging Face Space only this UI is public (the API listens on
+    127.0.0.1 inside the container), so gating the UI protects the LLM quota.
+    Unset APP_PASSWORD = no gate (local development).
+    """
+    expected = os.getenv("APP_PASSWORD", "")
+    if not expected or st.session_state.get("authenticated"):
+        return
+    st.markdown("<div class='empty-state'><h1>RAG Reliability Lab</h1><p>This demo is password-protected.</p></div>",
+                unsafe_allow_html=True)
+    with st.form("login"):
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Enter", use_container_width=True, type="primary")
+    if submitted:
+        if hmac.compare_digest(password.encode(), expected.encode()):
+            st.session_state.authenticated = True
+            st.rerun()
+        st.error("Incorrect password.")
+    st.stop()
 
 
 client = RagClient(_api_base_url())
@@ -217,6 +241,8 @@ def documents_panel(initial: list[dict], error: str | None) -> None:
 
     _panel()
 
+
+_require_password()
 
 with st.sidebar:
     if st.button("＋ New chat", use_container_width=True):

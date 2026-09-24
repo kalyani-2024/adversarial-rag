@@ -36,6 +36,8 @@ COPY --chown=app:app ui ./ui
 COPY --chown=app:app api.py app.py ./
 COPY --chown=app:app .streamlit ./.streamlit
 COPY --chown=app:app scripts ./scripts
+# Strip Windows line endings so a CRLF checkout can never break `sh` in the container.
+RUN sed -i 's/\r$//' scripts/*.sh
 COPY --chown=app:app eval/corpus ./seed_docs
 
 EXPOSE 8000 8501

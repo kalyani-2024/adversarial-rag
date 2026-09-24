@@ -29,3 +29,6 @@ Thumbs.db
 
 # Local browser-automation artifacts
 .playwright-mcp/
+
+# Generated Hugging Face Space folder (scripts/prepare_hf_space.py)
+dist/
