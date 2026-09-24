@@ -1,0 +1,35 @@
+# Render blueprint (alternative to Hugging Face Spaces). NOT tested by the author of this repo;
+# see docs/DEPLOYMENT.md for the trade-offs before using it.
+#
+# Why a paid plan: the API loads PyTorch + two transformer models. Measured in Docker: ~650 MiB idle
+# after warm-up, ~800 MiB peak while ingesting a 1.4 MB PDF - above the 512 MB free instance, and the free plan has no persistent disk, so uploaded
+# documents would be lost on every restart/deploy.
+services:
+  - type: web
+    name: rag-reliability-api
+    runtime: docker
+    plan: standard            # >= 2 GB RAM
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ROLE
+        value: api
+      - key: DATA_DIR
+        value: /data
+      - key: SEED_DIR
+        value: /app/seed_docs
+      - key: GROQ_API_KEY
+        sync: false             # set in the Render dashboard; never committed
+    disk:
+      name: rag-data
+      mountPath: /data
+      sizeGB: 1
+
+  - type: web
+    name: rag-reliability-ui
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: APP_ROLE
+        value: ui
+      - key: API_BASE_URL
+        sync: false             # set to the API service's public URL after the first deploy

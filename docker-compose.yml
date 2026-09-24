@@ -1,0 +1,38 @@
+# Local / single-VM deployment: API + UI from one image, data on a named volume.
+#   cp .env.example .env   # add GROQ_API_KEY
+#   docker compose up --build
+#   UI: http://localhost:8501   API docs: http://localhost:8000/docs
+services:
+  api:
+    build: .
+    image: rag-reliability-lab:latest
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      SEED_DIR: /app/seed_docs      # ingest the demo paper on first start (skipped if already indexed)
+      LOG_JSON: "true"
+    volumes:
+      - rag-data:/data              # SQLite + FAISS survive container restarts
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  ui:
+    image: rag-reliability-lab:latest
+    environment:
+      APP_ROLE: ui
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  rag-data:
