@@ -22,7 +22,11 @@ class RagClient:
         try:
             resp = requests.request(method, f"{self.base_url}{path}", timeout=kwargs.pop("timeout", self.timeout), **kwargs)
         except requests.RequestException as exc:
-            raise APIError(0, "unreachable", f"Cannot reach the API at {self.base_url} ({type(exc).__name__}).") from exc
+            raise APIError(
+                0, "unreachable",
+                f"Cannot reach the API at {self.base_url} ({type(exc).__name__}). Start it with "
+                "`uvicorn api:app --port 8000` (model warm-up takes ~10-30 s), then refresh this page.",
+            ) from exc
         if resp.status_code >= 400:
             try:
                 err = resp.json().get("error", {})
