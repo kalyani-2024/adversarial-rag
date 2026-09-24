@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     warmup_models: bool = True
     log_level: str = "INFO"
     log_json: bool = True
+    # Include user text (query, unsupported-claim excerpts, critique notes) in logs. Disable for privacy.
+    log_content: bool = True
     cors_origins: list[str] = ["*"]
 
     # --- UI -----------------------------------------------------------------

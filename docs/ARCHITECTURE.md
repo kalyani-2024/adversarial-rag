@@ -7,7 +7,7 @@ This document explains *why* the system is built the way it is, what alternative
 ```mermaid
 flowchart LR
     subgraph UI["Streamlit UI (ui/)"]
-        U[Chat + inspection panels]
+        U[Chat with inline<br/>hover citations]
     end
     subgraph API["FastAPI (app/api)"]
         R1["/documents"]
@@ -139,7 +139,7 @@ Rewriting costs an LLM call and can drift away from the user's exact wording, wh
 
 ### 3.8 Observability
 
-A `Trace` per request collects OpenTelemetry-shaped spans (name, start offset, duration, status, attributes) and token usage; it is returned in every response and logged as JSON lines keyed by `request_id` (also echoed in the `x-request-id` header). `/metrics` exposes counters and p50/p95 latency per stage. We deliberately did **not** add the OpenTelemetry SDK: with no collector to export to it adds dependencies, not capability. Exporting later is an adapter over `Trace` (map `Span` → OTel span, `record_llm` → GenAI semantic-convention attributes). Free-text attributes (answers, chunk text) are filtered out of logs.
+A `Trace` per request collects OpenTelemetry-shaped spans (name, start offset, duration, status, attributes) and token usage; it is returned in every response and logged as JSON lines keyed by `request_id` (also echoed in the `x-request-id` header). `/metrics` exposes counters and p50/p95 latency per stage. We deliberately did **not** add the OpenTelemetry SDK: with no collector to export to it adds dependencies, not capability. Exporting later is an adapter over `Trace` (map `Span` → OTel span, `record_llm` → GenAI semantic-convention attributes). Span logs carry only short scalar attributes. The per-query summary lines (`app/observability/query_log.py`: retrieval scores, per-attempt verdicts, timings, tokens) include the query text and unsupported-claim excerpts only when `LOG_CONTENT=true`; answers and chunk text are never logged. The chat UI shows none of this: it is for operators, not end users.
 
 Cost is reported only if `PRICE_PROMPT_PER_1M` / `PRICE_COMPLETION_PER_1M` are configured: provider prices change, so hardcoding them would silently go stale.
 

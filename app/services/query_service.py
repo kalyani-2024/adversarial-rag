@@ -7,6 +7,7 @@ import logging
 from app.core.config import Settings
 from app.core.llm import LLMClient
 from app.observability.metrics import MetricsRegistry
+from app.observability.query_log import log_query
 from app.observability.tracing import Trace
 from app.pipeline.graph import RunConfig, build_graph, recursion_limit
 from app.retrieval.hybrid import HybridRetriever
@@ -59,6 +60,7 @@ class QueryService:
                 state={"retrieval_query": request.query, "query_rewritten": False},
             )
             self.metrics.record_query(response)
+            log_query(response, include_content=self.settings.log_content)
             return response
 
         try:
@@ -73,15 +75,7 @@ class QueryService:
 
         response = self._response(request, trace, run, status=state["status"], answer=state["answer"], state=state)
         self.metrics.record_query(response)
-        logger.info(
-            "query completed",
-            extra={
-                "request_id": trace.request_id, "status": response.status, "mode": run.mode,
-                "retries": response.reliability.retries, "llm_calls": response.trace.llm_calls,
-                "total_ms": response.trace.total_ms,
-                "final_verdict": response.reliability.final.verdict if response.reliability.final else None,
-            },
-        )
+        log_query(response, include_content=self.settings.log_content)
         return response
 
     def _response(self, request: QueryRequest, trace: Trace, run: RunConfig, *, status, answer, state) -> QueryResponse:

@@ -93,7 +93,7 @@ How to frame it: *"My eval showed the always-on critic hurt, so I made it condit
 - **LangGraph:** the loop *is* a state machine with conditional edges. LangGraph makes the edges explicit and inspectable and gives a recursion limit; I don't use LangChain's retrieval abstractions.
 - **Groq:** low latency for multi-call pipelines; a free tier to demo with. Behind a protocol, so it's replaceable.
 - **Three different LLMs:** generator `gpt-oss-120b`, judge `qwen3.8-27b`, critic `gpt-oss-20b`. That reduces self-preference bias and spreads per-model rate limits. The eval uses an evaluator that must differ from the pipeline judge.
-- **Streamlit:** fastest way to build an inspection UI for a data-heavy response; it talks to the API over HTTP only, so it's replaceable.
+- **Streamlit:** fastest way to ship a chat UI in Python; it shows only the answer with inline hover citations and talks to the API over HTTP, so it's replaceable (e.g. by a React front end). Diagnostics live in backend logs, not in the user's view.
 - **FastAPI + Pydantic:** typed contracts, validation, OpenAPI for free, threadpool for sync handlers.
 
 ## 6. Engineering trade-offs to bring up yourself

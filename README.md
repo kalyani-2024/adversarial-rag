@@ -1,6 +1,6 @@
 # RAG Reliability Lab
 
-**Hybrid-retrieval RAG with a conditional adversarial reliability loop.** Answers are grounded in your documents with page-level citations, checked by an independent judge model, and only when the judge finds a problem are they critiqued and regenerated. Every response shows its evidence, scores and a per-stage execution trace.
+**Hybrid-retrieval RAG with a conditional adversarial reliability loop.** Answers are grounded in your documents with page-level citations, checked by an independent judge model, and only when the judge finds a problem are they critiqued and regenerated. Users get a clean chat with inline, hoverable citations; the evidence scores, judge verdicts, critiques and per-stage timings go to structured backend logs (and the API response) for debugging and evaluation.
 
 `FastAPI` · `LangGraph` · `FAISS` · `BM25` · `SentenceTransformers` (bi-encoder + cross-encoder) · `Groq` (gpt-oss-120b, qwen3.8-27b, gpt-oss-20b) · `Streamlit` · `Docker`
 
@@ -67,7 +67,7 @@ app/
   storage/        SQLite document store
   observability/  tracing (OTel-shaped spans), JSON logging, metrics
   evaluation/     golden dataset, metrics, harness, judge calibration, report
-ui/               Streamlit "RAG Reliability Lab" (HTTP client of the API)
+ui/               Streamlit chat UI: answers with inline hover citations (HTTP client of the API)
 eval/             golden.jsonl, corpus, run_eval.py, results/, legacy v1
 tests/            111 pytest tests (no network, scripted LLM)
 docs/             ARCHITECTURE.md, INTERVIEW_GUIDE.md, DEPLOYMENT.md
@@ -157,7 +157,7 @@ All numbers come from real runs on 2026-09-24 and are reproducible with the comm
 **What this means.**
 
 1. With a strong generator (gpt-oss-120b) and a strict grounding prompt, answers on this corpus were already faithful; the judge agreed and passed them, so the conditional loop mostly stayed idle. That is the intended behavior: v1's always-on rewrite was *measurably harmful* (faithfulness 4.63 → 3.95), and v2 no longer degrades answers. But on these sets it **did not measurably improve** them either.
-2. What you get for the cost is a **per-answer verification signal** (scores, unsupported claims, PASS/FAIL visible in the UI and API) plus a correction path for the failure mode it is designed for. That failure mode showed up in manual testing: compound questions inviting outside knowledge (see the example above). The judge's 6/6 fault detection is the evidence that the signal is meaningful.
+2. What you get for the cost is a **per-answer verification signal** (scores, unsupported claims, PASS/FAIL in the API response and backend logs) plus a correction path for the failure mode it is designed for. That failure mode showed up in manual testing: compound questions inviting outside knowledge (see the example above). The judge's 6/6 fault detection is the evidence that the signal is meaningful.
 3. **On this corpus BM25 beat dense and hybrid retrieval**, and the reranker did not help ranking. The questions were written by someone who had read the paper, so they share its exact vocabulary. Hybrid remains the safer default for paraphrased queries, but that claim is not demonstrated here.
 4. Evaluator vs pipeline-judge disagreements (2 answers) show that LLM-judged metrics carry real noise at this n.
 
@@ -178,6 +178,20 @@ On the stress set, where one question retried, adversarial cost 2.5× the calls,
 Where the time goes (typical trace): hybrid retrieval ~15 ms · cross-encoder rerank ~1 s (CPU) · generation 0.6–1.5 s · judge 0.3–0.5 s · critic 0.6–4 s and regeneration 1.3–2.3 s, only when the answer fails.
 
 Levers: `MAX_RETRIES` (0 = verification only, no correction), thresholds and `FAIL_ON_UNSUPPORTED_CLAIMS` (stricter means more retries), `RERANKER_ENABLED` (−1 s, but a weaker abstention signal), `mode=baseline` per request (no judge). Unanswerable questions cost **0 LLM calls** because of the evidence gate. Set `PRICE_PROMPT_PER_1M` / `PRICE_COMPLETION_PER_1M` to get per-request cost estimates; no prices are hardcoded because they go stale.
+
+### Chat UI and logs
+
+The UI is deliberately minimal: a chat with question, answer, and numbered citation badges next to each sentence. Hovering or clicking a badge shows the source document, page/chunk and the passage text. The sidebar only manages documents. Everything diagnostic is logged by the API as JSON lines keyed by `request_id` (`app/observability/query_log.py`):
+
+| Log message | Contents |
+|---|---|
+| `query received` | mode, whether the query was rewritten (+ query text if `LOG_CONTENT=true`) |
+| `retrieval` | every final chunk with dense / BM25 / RRF / rerank scores and ranks |
+| `reliability attempt` | per attempt: verdict, three scores, failed checks, unsupported-claim count (+ excerpts and critique notes if `LOG_CONTENT=true`) |
+| `query completed` | status, initial/final verdict, retries, citations, per-stage latency, throttle time, LLM calls, tokens, cost |
+| `span` | one line per pipeline stage with its duration and attributes |
+
+Set `LOG_CONTENT=false` where logs must not contain user text. The full structured detail is also in the `POST /query` response for programmatic clients and the evaluation harness.
 
 ## 11. API
 

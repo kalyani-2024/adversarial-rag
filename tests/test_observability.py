@@ -54,3 +54,35 @@ def test_latency_percentiles():
     s = _stats([float(i) for i in range(1, 101)])
     assert s.count == 100 and s.p50_ms == 51.0 and s.p95_ms == 95.0 and s.mean_ms == 50.5
     assert _stats([]).p50_ms is None
+
+
+def test_query_log_records_details_and_respects_content_flag(settings, document_service, caplog):
+    from app.retrieval.bm25 import BM25Index
+    from app.retrieval.hybrid import HybridRetriever
+    from app.schemas.query import QueryRequest
+    from app.services.query_service import QueryService
+    from app.observability.metrics import MetricsRegistry
+    from tests.fakes import FakeLLM
+
+    judge = json.dumps({"faithfulness": 0.95, "relevance": 1, "completeness": 1,
+                        "unsupported_claims": ["secret claim text"], "reason": "one claim unsupported"})
+    llm = FakeLLM({"generate": ["AUC 0.959 [1]."], "judge": [judge, judge.replace('["secret claim text"]', "[]")],
+                   "critic": ['{"unsupported_claims": ["x"], "instructions": "fix"}'], "regenerate": ["AUC 0.959 [1]."]})
+    document_service.ingest("paper.txt", b"The Transformer achieves ROC-AUC 0.959 on the test split.")
+    retriever = HybridRetriever(settings, document_service.store, document_service.embedder, document_service.dense_index, BM25Index())
+    retriever.refresh_sparse_index()
+    service = QueryService(settings, llm, retriever, MetricsRegistry())
+
+    with caplog.at_level(logging.INFO, logger="rag.query"):
+        service.run(QueryRequest(query="What ROC-AUC does the Transformer reach?"))
+    msgs = [r.msg for r in caplog.records if r.name == "rag.query"]
+    assert msgs == ["query received", "retrieval", "reliability attempt", "reliability attempt", "query completed"]
+    first_attempt = next(r for r in caplog.records if r.msg == "reliability attempt")
+    assert first_attempt.failed_checks == ["unsupported_claims"] and first_attempt.unsupported_claims == ["secret claim text"]
+
+    caplog.clear()
+    settings.log_content = False
+    with caplog.at_level(logging.INFO, logger="rag.query"):
+        service.run(QueryRequest(query="What ROC-AUC does the Transformer reach?"))
+    for r in caplog.records:
+        assert "query" not in r.__dict__ and "unsupported_claims" not in r.__dict__
