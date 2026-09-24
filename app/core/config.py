@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # --- Ingestion ----------------------------------------------------------
     chunk_size: int = Field(800, ge=100, description="Target chunk size in characters")
     chunk_overlap: int = Field(120, ge=0)
-    max_upload_mb: float = Field(20, gt=0)
+    max_upload_mb: float = Field(100, gt=0)
 
     # --- Retrieval ----------------------------------------------------------
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
@@ -62,9 +62,12 @@ class Settings(BaseSettings):
     bm25_top_k: int = Field(20, ge=1)
     rrf_k: int = Field(60, ge=1)
     final_top_k: int = Field(5, ge=1, le=20)
-    rerank_candidates: int = Field(20, ge=1, description="Fused candidates sent to the reranker")
+    rerank_candidates: int = Field(10, ge=1, description="Fused candidates sent to the reranker (10 vs 20: same hit@k on the golden set, ~2x faster)")
     reranker_enabled: bool = True
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # Tokens per (query, chunk) pair. 800-char chunks are ~200 tokens, so 256 rarely truncates
+    # and halves CPU time versus 512 (measured: 2.1 s -> 1.2 s for 20 pairs).
+    reranker_max_length: int = Field(256, ge=64, le=512)
     # Evidence gate: below these scores we abstain instead of calling the LLM.
     # Calibrated on ms-marco-MiniLM logits: on-topic >= -3.2, off-topic ~ -11 (see docs).
     min_rerank_score: float = -5.0

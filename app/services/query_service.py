@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.core.llm import LLMClient
 from app.observability.metrics import MetricsRegistry
 from app.observability.query_log import log_query
+from app.services.priority import QueryActivity
 from app.observability.tracing import Trace
 from app.pipeline.graph import RunConfig, build_graph, recursion_limit
 from app.retrieval.hybrid import HybridRetriever
@@ -23,11 +24,13 @@ logger = logging.getLogger(__name__)
 
 
 class QueryService:
-    def __init__(self, settings: Settings, llm: LLMClient, retriever: HybridRetriever, metrics: MetricsRegistry) -> None:
+    def __init__(self, settings: Settings, llm: LLMClient, retriever: HybridRetriever, metrics: MetricsRegistry,
+                 activity: QueryActivity | None = None) -> None:
         self.settings = settings
         self.llm = llm
         self.retriever = retriever
         self.metrics = metrics
+        self.activity = activity or QueryActivity()
         self.graph = build_graph(llm, retriever)
 
     def resolve(self, request: QueryRequest) -> RunConfig:
@@ -50,7 +53,12 @@ class QueryService:
             critic_model=s.effective_critic_model,
         )
 
-    def run(self, request: QueryRequest, request_id: str | None = None) -> QueryResponse:
+    def run(self, request: QueryRequest, request_id: str | None = None, emit=None) -> QueryResponse:
+        """Answer a query. `emit(event, data)` receives streaming events (status, sources, token, reset)."""
+        with self.activity.running():  # background indexing yields while this runs
+            return self._run(request, request_id, emit)
+
+    def _run(self, request: QueryRequest, request_id: str | None, emit) -> QueryResponse:
         run = self.resolve(request)
         trace = Trace(request_id)
 
@@ -66,7 +74,8 @@ class QueryService:
         try:
             state = self.graph.invoke(
                 {"query": request.query, "history": request.history, "run": run},
-                config={"configurable": {"trace": trace}, "recursion_limit": recursion_limit(run.max_retries)},
+                config={"configurable": {"trace": trace, "emit": emit},
+                        "recursion_limit": recursion_limit(run.max_retries)},
             )
         except Exception as exc:
             self.metrics.record_error(type(exc).__name__)

@@ -15,6 +15,7 @@ import logging
 import random
 import re
 import time
+from collections.abc import Callable
 from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -31,6 +32,7 @@ from app.core.errors import (
 logger = logging.getLogger(__name__)
 
 Message = dict[str, str]
+TokenCallback = Callable[[str], None]
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -57,6 +59,19 @@ class LLMClient(Protocol):
         max_tokens: int | None = None,
         json_mode: bool = False,
     ) -> LLMResponse: ...
+
+    def stream(
+        self,
+        messages: list[Message],
+        *,
+        purpose: str,
+        on_token: TokenCallback,
+        model: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Like `complete`, but calls `on_token(delta)` as text arrives. Returns the full response."""
+        ...
 
 
 class GroqLLM:
@@ -105,34 +120,92 @@ class GroqLLM:
         kwargs.update(self._model_specific_params(model_name))
 
         start = time.perf_counter()
-        throttle_s = 0.0
-        max_retries = self._settings.llm_max_retries
-        for attempt in range(max_retries + 1):
-            try:
-                resp = client.chat.completions.create(**kwargs)
-                break
-            except (groq.RateLimitError, groq.APITimeoutError, groq.APIConnectionError, groq.InternalServerError) as exc:
-                wait = _backoff_seconds(exc, attempt)
-                if attempt == max_retries or throttle_s + wait > self._settings.llm_max_wait_s:
-                    raise _map_error(exc, purpose) from exc
-                logger.warning("llm call retry", extra={"purpose": purpose, "model": model_name, "attempt": attempt + 1,
-                                                        "wait_s": round(wait, 2), "error_type": type(exc).__name__})
-                time.sleep(wait)
-                throttle_s += wait
-            except groq.APIError as exc:  # auth errors and other non-retryable 4xx
-                raise _map_error(exc, purpose) from exc
-        latency_ms = (time.perf_counter() - start) * 1000
-
+        resp, throttle_s, attempts = self._create_with_retry(client, kwargs, purpose)
         usage = getattr(resp, "usage", None)
         return LLMResponse(
             text=resp.choices[0].message.content or "",
             model=model_name,
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-            latency_ms=latency_ms,
+            latency_ms=(time.perf_counter() - start) * 1000,
             throttle_ms=throttle_s * 1000,
-            attempts=attempt + 1,
+            attempts=attempts,
         )
+
+    def stream(
+        self,
+        messages: list[Message],
+        *,
+        purpose: str,
+        on_token: TokenCallback,
+        model: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Stream content deltas to `on_token`.
+
+        Retries apply only to *opening* the stream: once tokens have been
+        delivered, a retry would duplicate text on the client, so a mid-stream
+        failure is raised instead. Reasoning deltas (gpt-oss) are not forwarded.
+        """
+        import groq
+
+        client = self._get_client()
+        model_name = model or self._settings.llm_model
+        kwargs: dict = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens or self._settings.generation_max_tokens,
+            "stream": True,
+            **self._model_specific_params(model_name),
+        }
+        start = time.perf_counter()
+        stream, throttle_s, attempts = self._create_with_retry(client, kwargs, purpose)
+        parts: list[str] = []
+        usage = None
+        try:
+            for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        parts.append(delta)
+                        on_token(delta)
+                chunk_usage = getattr(chunk, "usage", None) or getattr(getattr(chunk, "x_groq", None), "usage", None)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+        except groq.APIError as exc:
+            raise _map_error(exc, purpose) from exc
+        return LLMResponse(
+            text="".join(parts),
+            model=model_name,
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            throttle_ms=throttle_s * 1000,
+            attempts=attempts,
+        )
+
+    def _create_with_retry(self, client, kwargs: dict, purpose: str):
+        """Call the provider, retrying transient errors. Returns (response_or_stream, throttle_s, attempts)."""
+        import groq
+
+        throttle_s = 0.0
+        max_retries = self._settings.llm_max_retries
+        for attempt in range(max_retries + 1):
+            try:
+                return client.chat.completions.create(**kwargs), throttle_s, attempt + 1
+            except (groq.RateLimitError, groq.APITimeoutError, groq.APIConnectionError, groq.InternalServerError) as exc:
+                wait = _backoff_seconds(exc, attempt)
+                if attempt == max_retries or throttle_s + wait > self._settings.llm_max_wait_s:
+                    raise _map_error(exc, purpose) from exc
+                logger.warning("llm call retry", extra={"purpose": purpose, "model": kwargs["model"], "attempt": attempt + 1,
+                                                        "wait_s": round(wait, 2), "error_type": type(exc).__name__})
+                time.sleep(wait)
+                throttle_s += wait
+            except groq.APIError as exc:  # auth errors and other non-retryable 4xx
+                raise _map_error(exc, purpose) from exc
+        raise AssertionError("unreachable")
 
     def _model_specific_params(self, model_name: str) -> dict:
         """Provider quirks for reasoning models, kept out of the call sites."""

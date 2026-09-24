@@ -5,7 +5,7 @@
 | Resource | Why |
 |---|---|
 | ~650 MiB RAM for the API idle, ~800 MiB peak while ingesting (measured, see below) | PyTorch + MiniLM embedder + MiniLM cross-encoder in memory |
-| 1–2 vCPU | embedding + reranking are CPU-bound (rerank of 20 candidates took ~1 s per query on the test laptop; expect more on 1–2 vCPU) |
+| 1–2 vCPU | embedding + reranking are CPU-bound (rerank of 10 candidates × 256 tokens ~0.6 s per query and embedding ~21 chunks/s on the test laptop; expect slower on 1–2 vCPU) |
 | A writable `DATA_DIR` | SQLite (documents/chunks) + FAISS index |
 | Outbound HTTPS to Groq | LLM calls; set `GROQ_API_KEY` as a runtime secret |
 

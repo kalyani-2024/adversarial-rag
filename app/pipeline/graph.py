@@ -31,7 +31,7 @@ from langgraph.graph import END, START, StateGraph
 from app.core.errors import LLMError
 from app.core.llm import LLMClient
 from app.generation.critic import critique_answer
-from app.generation.generator import GeneratedAnswer, generate_answer, is_abstention
+from app.generation.generator import GeneratedAnswer, generate_answer, is_abstention, source_label
 from app.generation.judge import judge_answer
 from app.generation.rewrite import decide_rewrite, rewrite_query
 from app.observability.tracing import Trace
@@ -83,6 +83,18 @@ class PipelineState(TypedDict, total=False):
 
 def _trace(config: RunnableConfig) -> Trace:
     return config["configurable"]["trace"]
+
+
+def _emit(config: RunnableConfig, event: str, data: dict) -> None:
+    """Send a progress event to a streaming client, if one is attached (no-op otherwise)."""
+    emit = config["configurable"].get("emit")
+    if emit is not None:
+        emit(event, data)
+
+
+def _token_sink(config: RunnableConfig):
+    emit = config["configurable"].get("emit")
+    return (lambda text: emit("token", {"text": text})) if emit is not None else None
 
 
 # --- routing (pure functions) ------------------------------------------------------------------
@@ -143,6 +155,7 @@ def build_graph(llm: LLMClient, retriever: HybridRetriever):
 
     def retrieve(state: PipelineState, config: RunnableConfig) -> dict[str, Any]:
         trace, run = _trace(config), state["run"]
+        _emit(config, "status", {"stage": "retrieving"})
         result = retriever.retrieve(state["retrieval_query"], top_k=run.top_k, use_reranker=run.use_reranker)
         ok, reason = evidence_check(result, retriever.settings)
         trace.add_span(
@@ -162,6 +175,11 @@ def build_graph(llm: LLMClient, retriever: HybridRetriever):
         else:
             trace.add_span("reranking", 0.0, status="skipped", reason="disabled")
         trace.add_span("evidence_gate", 0.0, status="ok", passed=ok, reason=reason)
+        if ok:
+            # Numbered exactly as in the prompt, so the client can render [n] badges while tokens stream.
+            _emit(config, "sources", {"sources": [
+                {"index": i, "label": source_label(c), "text": c.text} for i, c in enumerate(result.chunks, start=1)
+            ]})
         return {"retrieval": result, "evidence_ok": ok, "evidence_reason": reason}
 
     def abstain(state: PipelineState) -> dict[str, Any]:
@@ -179,8 +197,10 @@ def build_graph(llm: LLMClient, retriever: HybridRetriever):
 
     def generate(state: PipelineState, config: RunnableConfig) -> dict[str, Any]:
         trace, run = _trace(config), state["run"]
+        _emit(config, "status", {"stage": "generating"})
         with trace.span("generation", chunks=len(state["retrieval"].chunks)) as span:
-            gen = generate_answer(llm, state["retrieval_query"], state["retrieval"].chunks, temperature=run.generator_temperature)
+            gen = generate_answer(llm, state["retrieval_query"], state["retrieval"].chunks,
+                                  temperature=run.generator_temperature, on_token=_token_sink(config))
             trace.record_llm(gen.response, "generate")
             span.set(citations=len(gen.citations), invalid_citations=len(gen.invalid_citations), abstained=gen.abstained)
         return {**_record_generation(state, gen), "retries": 0}
@@ -189,6 +209,7 @@ def build_graph(llm: LLMClient, retriever: HybridRetriever):
         trace, run = _trace(config), state["run"]
         attempts = list(state["attempts"])
         current = attempts[-1]
+        _emit(config, "status", {"stage": "verifying"})
         with trace.span("judge", attempt=current.attempt) as span:
             try:
                 result, resp = judge_answer(
@@ -225,10 +246,13 @@ def build_graph(llm: LLMClient, retriever: HybridRetriever):
     def regenerate(state: PipelineState, config: RunnableConfig) -> dict[str, Any]:
         trace, run = _trace(config), state["run"]
         retries = state.get("retries", 0) + 1
+        _emit(config, "status", {"stage": "revising", "retry": retries})
+        _emit(config, "reset", {"reason": "revising after verification"})  # client discards the draft
         with trace.span("regeneration", retry=retries) as span:
             gen = generate_answer(
                 llm, state["retrieval_query"], state["retrieval"].chunks, temperature=run.generator_temperature,
                 critique=state["pending_critique"], previous_answer=state["attempts"][-1].answer,
+                on_token=_token_sink(config),
             )
             trace.record_llm(gen.response, "regenerate")
             span.set(citations=len(gen.citations), abstained=gen.abstained)

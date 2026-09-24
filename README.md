@@ -69,7 +69,7 @@ app/
   evaluation/     golden dataset, metrics, harness, judge calibration, report
 ui/               Streamlit chat UI: answers with inline hover citations (HTTP client of the API)
 eval/             golden.jsonl, corpus, run_eval.py, results/, legacy v1
-tests/            111 pytest tests (no network, scripted LLM)
+tests/            127 pytest tests (no network, scripted LLM)
 docs/             ARCHITECTURE.md, INTERVIEW_GUIDE.md, DEPLOYMENT.md
 ```
 
@@ -79,7 +79,7 @@ docs/             ARCHITECTURE.md, INTERVIEW_GUIDE.md, DEPLOYMENT.md
 - **Dense:** `all-MiniLM-L6-v2` embeddings (normalized, so inner product = cosine) in `faiss.IndexIDMap2(IndexFlatIP)`, keyed by SQLite chunk id so documents can be deleted.
 - **Sparse:** BM25 with Lucene's non-negative IDF (the common Okapi IDF returns zero scores on small corpora; there's a test for that), with a tokenizer that keeps `0.959` and `roc-auc` intact.
 - **Fusion:** Reciprocal Rank Fusion, `Σ 1/(60 + rank)`. It uses ranks, not incomparable raw scores.
-- **Rerank:** `cross-encoder/ms-marco-MiniLM-L-6-v2` on the top 20 fused candidates. It sits behind a `Reranker` protocol (swap in Cohere/Voyage with one class), and failures fall back to fusion order.
+- **Rerank:** `cross-encoder/ms-marco-MiniLM-L-6-v2` on the top 10 fused candidates with inputs capped at 256 tokens (measured: same hit@3/hit@5 as 20 × 512 on the golden set, slightly better MRR, ~0.6 s instead of ~2 s on CPU). It sits behind a `Reranker` protocol (swap in Cohere/Voyage with one class), and failures fall back to fusion order.
 - **Evidence gate:** abstain if the best rerank logit is below −5.0. This was calibrated on real queries: on-topic ≥ −3.2, off-topic ≈ −11.
 - Every chunk in the response carries `dense_score/rank`, `bm25_score/rank`, `rrf_score`, `fusion_rank`, `rerank_score`, `final_rank`.
 
@@ -132,6 +132,8 @@ All numbers come from real runs on 2026-09-24 and are reproducible with the comm
 
 **Retrieval ablation** (deterministic, 19 labelled questions):
 
+*These runs used the earlier reranker settings (20 candidates × 512 tokens). The current defaults (10 × 256) were re-measured on the same set: identical hit@3/hit@5, MRR@5 0.800 vs 0.774, ~2–3× faster reranking.*
+
 | System | hit@5 | recall@5 | MRR@5 | hit@3 | MRR@3 | p50 latency |
 |---|---|---|---|---|---|---|
 | Dense only (MiniLM + FAISS) | 0.842 | 0.816 | 0.653 | 0.789 | 0.640 | 14 ms |
@@ -179,6 +181,15 @@ Where the time goes (typical trace): hybrid retrieval ~15 ms · cross-encoder re
 
 Levers: `MAX_RETRIES` (0 = verification only, no correction), thresholds and `FAIL_ON_UNSUPPORTED_CLAIMS` (stricter means more retries), `RERANKER_ENABLED` (−1 s, but a weaker abstention signal), `mode=baseline` per request (no judge). Unanswerable questions cost **0 LLM calls** because of the evidence gate. Set `PRICE_PROMPT_PER_1M` / `PRICE_COMPLETION_PER_1M` to get per-request cost estimates; no prices are hardcoded because they go stale.
 
+### Responsiveness: streaming, background indexing, large files
+
+- **Streaming answers.** `POST /query/stream` (Server-Sent Events) streams the draft answer token by token. Citation badges appear as the text arrives, because the numbered sources are sent before generation starts. If the judge fails the draft, a `reset` event clears it and the revised answer streams in its place. The `final` event always carries the answer the pipeline actually selected. Measured delays: the gpt-oss "thinking" phase before the first token is ~1–2 s; Groq then delivers the whole answer in ~0.3 s.
+- **Uploads up to 100 MB, indexed in the background.** `POST /documents` validates type, size and duplicates, then returns **202** immediately. A single worker parses, chunks and embeds in batches of 256, reporting `stage`/`progress` on `GET /documents/{id}`; the sidebar shows a live progress bar. Failures are kept as `status=failed` with the error, deleting a document mid-indexing cancels it, and uploads interrupted by a restart are marked failed on startup. `?wait=true` keeps the old synchronous behaviour.
+- **Chat stays fast while indexing.** Queries take priority: the indexer pauses between embedding batches while a question is being answered (capped at 10 s). Measured: time to first token 2.1 s while a 1,710-chunk upload was indexing vs 3.0 s idle, i.e. no slowdown beyond noise.
+- **Retrieval scales with corpus size.** BM25 is an inverted index split into per-document segments: 1.1 ms per query at 100k chunks, and adding or removing a document re-indexes only that document (30 ms for a small file next to a 100k-chunk one). FAISS exact search stays in the milliseconds at that size, and the reranker only ever sees the top 10.
+- **What large files cost.** Embedding is the bottleneck and depends on the amount of *text*, not the file size. On the test laptop's CPU MiniLM embeds ~21 chunks/s: 1 MB of plain text is ~1,700 chunks, ~80 s. A 100 MB PDF that is mostly images and scans contains far less text (scanned pages need OCR, which is not supported). A 100 MB file of pure text would be ~170k chunks, i.e. hours on this CPU, and needs a GPU or a hosted embedding API. The ONNX Runtime backend was tried and was *not* faster on this machine (15–23 vs 21 chunks/s).
+- **Windows `localhost`.** Requests to `localhost` cost ~2 s each on the test machine (IPv6 is tried first), vs 6 ms to `127.0.0.1`. The UI client rewrites `localhost` to `127.0.0.1` automatically.
+
 ### Chat UI and logs
 
 The UI is deliberately minimal: a chat with question, answer, and numbered citation badges next to each sentence. Hovering or clicking a badge shows the source document, page/chunk and the passage text. The sidebar only manages documents. Everything diagnostic is logged by the API as JSON lines keyed by `request_id` (`app/observability/query_log.py`):
@@ -200,10 +211,12 @@ Interactive OpenAPI docs are at `http://localhost:8000/docs`.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | status, document/chunk/vector counts, index consistency, models |
-| POST | `/documents` | upload + index (multipart `file`); 201, 409 duplicate, 413 too large, 415 type, 422 unparseable |
-| GET | `/documents` | list documents with chunk counts |
+| POST | `/documents` | upload (multipart `file`, ≤ 100 MB); **202** + background indexing, or 201 with `?wait=true`; 409 duplicate, 413 too large, 415 type, 422 unparseable (`wait=true`) |
+| GET | `/documents/{id}` | status (`processing`/`ready`/`failed`), `stage`, `progress`, `error` |
+| GET | `/documents` | list documents with status, progress and chunk counts |
 | DELETE | `/documents/{id}` | delete a document and its chunks (SQLite + FAISS + BM25) |
-| POST | `/query` | answer a question |
+| POST | `/query` | answer a question (full JSON response) |
+| POST | `/query/stream` | same, as Server-Sent Events: `status`, `sources`, `token`, `reset`, `final`, `error` |
 | GET | `/metrics` | counters, verdicts, retry rate, tokens, p50/p95 per stage |
 | POST | `/ingest` | *deprecated* alias of `POST /documents` (v1 compatibility) |
 
@@ -236,7 +249,7 @@ cp .env.example .env                               # set GROQ_API_KEY (console.g
 uvicorn api:app --port 8000                        # API  → http://localhost:8000/docs
 streamlit run app.py                               # UI   → http://localhost:8501
 
-pytest                                             # 111 tests, no network needed
+pytest                                             # 127 tests, no network needed
 python -m eval.run_eval --retrieval-only           # retrieval ablation, no LLM calls
 python -m eval.run_eval --publish                  # full evaluation (uses your Groq quota)
 ```
@@ -265,6 +278,8 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Summary:
 - Tested: local `docker compose` and the single-container `APP_ROLE=all` mode. **Not tested:** an actual Spaces or Render deployment.
 
 ## 15. Limitations
+
+- **Indexing speed is CPU-bound** (~21 chunks/s on the test laptop). Text-heavy uploads of tens of MB take many minutes; use a GPU or hosted embeddings for that. PDF text extraction (`pypdf`) can drop spaces in some PDFs (e.g. "realEdNetclickstreams").
 
 - **Small evaluation:** one document and 22 questions, written by someone who had read the paper, so there's lexical-overlap bias that favors BM25. Differences of a few points are within noise.
 - **LLM judges are imperfect.** The pipeline judge is calibrated on only 10 seeded cases, and the evaluator is also an LLM (mitigated with deterministic metrics).

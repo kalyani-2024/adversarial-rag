@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,10 @@ class ChunkRecord(BaseModel):
 
 class DocumentInfo(BaseModel):
     id: str
+    status: Literal["processing", "ready", "failed"] = "ready"
+    error: str | None = None
+    progress: float | None = Field(None, description="0..1 while processing (embedding progress)")
+    stage: str | None = Field(None, description="parsing | embedding | indexing while processing")
     filename: str
     file_type: str
     content_hash: str = Field(description="SHA-256 of the raw bytes; used for de-duplication")

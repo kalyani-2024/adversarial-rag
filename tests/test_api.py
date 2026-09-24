@@ -24,8 +24,8 @@ def client(settings, llm):
         yield c
 
 
-def _upload(client, name="paper.txt", content=PAPER, mime="text/plain"):
-    return client.post("/documents", files={"file": (name, content, mime)})
+def _upload(client, name="paper.txt", content=PAPER, mime="text/plain", wait=True):
+    return client.post("/documents", params={"wait": str(wait).lower()}, files={"file": (name, content, mime)})
 
 
 def test_health(client):
@@ -136,3 +136,55 @@ def test_legacy_ingest_endpoint_still_works(client):
 def test_openapi_documents_endpoints(client):
     paths = client.get("/openapi.json").json()["paths"]
     assert {"/health", "/documents", "/documents/{document_id}", "/query", "/metrics"} <= set(paths)
+
+
+def _wait_for(client, doc_id, timeout=10.0):
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        doc = client.get(f"/documents/{doc_id}").json()
+        if doc["status"] != "processing":
+            return doc
+        time.sleep(0.05)
+    raise AssertionError("document still processing")
+
+
+def test_background_upload_becomes_ready_and_queryable(client):
+    r = _upload(client, wait=False)
+    assert r.status_code == 202
+    doc = r.json()["document"]
+    assert doc["status"] == "processing" and doc["num_chunks"] == 0
+    done = _wait_for(client, doc["id"])
+    assert done["status"] == "ready" and done["num_chunks"] >= 1 and done["progress"] is None
+    body = client.post("/query", json={"query": "What ROC-AUC does the Transformer achieve?"}).json()
+    assert body["status"] == "answered"
+
+
+def test_background_parse_failure_is_recorded_and_retryable(client):
+    r = _upload(client, "broken.pdf", b"%PDF-1.4 garbage", "application/pdf", wait=False)
+    assert r.status_code == 202
+    failed = _wait_for(client, r.json()["document"]["id"])
+    assert failed["status"] == "failed" and "broken.pdf" in failed["error"]
+    # re-uploading the same bytes replaces the failed record instead of reporting a duplicate
+    retry = _upload(client, "broken.pdf", b"%PDF-1.4 garbage", "application/pdf", wait=False)
+    assert retry.status_code == 202 and retry.json()["document"]["id"] != failed["id"]
+
+
+def test_immediate_validation_errors_even_in_background_mode(client):
+    assert _upload(client, "image.png", b"\x89PNG", wait=False).status_code == 415
+    _upload(client)
+    dup = _upload(client, "copy.txt", wait=False)
+    assert dup.status_code == 409
+
+
+def test_interrupted_uploads_marked_failed_on_restart(settings):
+    from app.storage.document_store import DocumentStore
+
+    store = DocumentStore(settings.db_path)
+    store.create_document(document_id="half", filename="big.pdf", file_type="pdf", content_hash="h", size_bytes=1)
+    store.close()
+    app = create_app(settings, container_factory=lambda s: build_container(s, llm=FakeLLM(), embedder=HashEmbedder()))
+    with TestClient(app) as c:
+        doc = c.get("/documents/half").json()
+    assert doc["status"] == "failed" and "restart" in doc["error"]

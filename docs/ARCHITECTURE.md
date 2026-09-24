@@ -162,7 +162,7 @@ What breaks first, in order:
 1. **Per-process state.** FAISS, BM25 and metrics live in one process; a second replica would have its own copy. → Move vectors to a shared store (pgvector if already on Postgres; Qdrant/Weaviate/OpenSearch otherwise), BM25 to OpenSearch/Elasticsearch or Postgres full-text, metrics to Prometheus, SQLite to Postgres. The service layer already isolates these behind `DocumentStore`, `DenseIndex`, `BM25Index`.
 2. **CPU-bound models in the request path.** Embedding and cross-encoder inference hold a worker for ~1 s. → Run them in a dedicated inference service (e.g. Text Embeddings Inference) with batching, or on GPU; or use hosted embeddings/rerankers.
 3. **LLM rate limits and latency.** At our settings a query costs 2–8 calls. → Provider tier upgrades, request queues with backpressure, concurrency limits per tenant, streaming the first answer while verification runs, and caching (below).
-4. **Synchronous ingestion.** Large PDFs block an HTTP request. → Async ingestion queue (below).
+4. **Ingestion throughput.** Already asynchronous in-process: a single background worker with progress, cancellation, restart recovery and query priority. The next step is an out-of-process queue with GPU workers (below).
 
 ### How Redis/caching would help
 
@@ -172,9 +172,11 @@ What breaks first, in order:
 - **Rate-limit tokens / semaphores** shared across replicas for the LLM provider budget.
 - **Semantic cache** (vector similarity over past queries) is possible but risky for reliability: near-duplicate questions can need different answers, so it should be conservative and scoped per tenant.
 
-### Asynchronous ingestion with a queue
+### From in-process background ingestion to a queue
 
-`POST /documents` would store the raw file in object storage (S3/GCS), insert a `documents` row with `status=pending`, enqueue a job (SQS / RabbitMQ / Redis Streams / Celery) and return `202 Accepted` with the id. Workers parse → chunk → embed in batches → upsert vectors → mark `ready` (or `failed` with the error). The UI polls `GET /documents/{id}`. Benefits: large files do not time out, embedding can be batched on GPU workers, retries are idempotent (content hash), and ingestion throughput scales independently from query serving.
+Today `POST /documents` returns 202 and one worker thread in the API process indexes the file, pausing between embedding batches while queries run (`app/services/priority.py`). That keeps a single server responsive but ties indexing to the API's CPU and loses in-flight work on restart (it is marked failed). At scale:
+
+The API would store the raw file in object storage (S3/GCS), insert a `documents` row with `status=pending`, enqueue a job (SQS / RabbitMQ / Redis Streams / Celery) and return `202 Accepted` with the id. Workers parse → chunk → embed in batches → upsert vectors → mark `ready` (or `failed` with the error). The UI polls `GET /documents/{id}`. Benefits: large files do not time out, embedding can be batched on GPU workers, retries are idempotent (content hash), and ingestion throughput scales independently from query serving.
 
 ### Authentication and multi-tenancy
 

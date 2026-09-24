@@ -41,7 +41,13 @@ class HybridRetriever:
         self.reranker = reranker
 
     def refresh_sparse_index(self) -> None:
-        self.bm25_index.build(self.store.all_chunks())
+        """Bring BM25 in line with the store, touching only documents that were added or removed."""
+        stored = {d.id for d in self.store.list_documents() if d.num_chunks}
+        indexed = self.bm25_index.document_ids()
+        for doc_id in indexed - stored:
+            self.bm25_index.remove_document(doc_id)
+        for doc_id in stored - indexed:
+            self.bm25_index.add_document(doc_id, self.store.get_document_chunks(doc_id))
 
     def retrieve(self, query: str, *, top_k: int | None = None, use_reranker: bool | None = None) -> RetrievalResult:
         s = self.settings

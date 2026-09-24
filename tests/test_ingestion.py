@@ -185,3 +185,51 @@ def test_listener_notified(document_service: DocumentService):
     info = document_service.ingest("a.txt", b"hello")
     document_service.delete(info.id)
     assert len(calls) == 2
+
+
+def test_delete_while_processing_cancels(document_service: DocumentService):
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    real_embed = document_service.embedder.embed
+
+    def slow_embed(texts):
+        started.set()
+        release.wait(5)
+        return real_embed(texts)
+
+    document_service.embedder.embed = slow_embed
+    info = document_service.submit("big.txt", (LOREM * 3).encode())
+    assert started.wait(5)
+    assert document_service.get(info.id).stage == "embedding"
+    document_service.delete(info.id)
+    release.set()
+    document_service._executor.shutdown(wait=True)
+    assert document_service.list_documents() == []
+    assert document_service.dense_index.size == 0
+
+
+def test_indexing_pauses_while_a_query_runs(document_service: DocumentService):
+    import threading
+    import time
+
+    from app.services.priority import QueryActivity
+
+    activity = document_service.activity
+    assert isinstance(activity, QueryActivity)
+    released = threading.Event()
+
+    def long_query():
+        with activity.running():
+            released.wait(5)
+
+    t = threading.Thread(target=long_query)
+    t.start()
+    time.sleep(0.05)
+    info = document_service.submit("doc.txt", LOREM.encode())
+    time.sleep(0.3)
+    assert document_service.get(info.id).status == "processing"  # held back by the running query
+    released.set()
+    t.join()
+    document_service._executor.shutdown(wait=True)
+    assert document_service.get(info.id).status == "ready"

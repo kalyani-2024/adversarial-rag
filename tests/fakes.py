@@ -36,6 +36,13 @@ class FakeLLM:
             text = entry[idx]
         return LLMResponse(text=text, model="fake", prompt_tokens=100, completion_tokens=20, latency_ms=1.0)
 
+    def stream(self, messages, *, purpose, on_token, model=None, temperature=0.0, max_tokens=None):
+        """Streaming variant: emits the scripted text word by word."""
+        resp = self.complete(messages, purpose=purpose, model=model, temperature=temperature, max_tokens=max_tokens)
+        for word in re.findall(r"\S+\s*", resp.text):
+            on_token(word)
+        return resp
+
     def count(self, purpose: str) -> int:
         return sum(1 for p, _ in self.calls if p == purpose)
 
@@ -55,3 +62,4 @@ class HashEmbedder:
         norms = np.linalg.norm(out, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         return out / norms
+

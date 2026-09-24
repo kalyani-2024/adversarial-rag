@@ -190,3 +190,44 @@ def test_bm25_works_on_tiny_corpus():
     idx.build([_chunk(1, "transformer roc-auc 0.959"), _chunk(2, "sourdough bread")])
     hits = idx.search("transformer", k=2)
     assert hits and hits[0][0] == 1
+
+
+def test_bm25_segments_match_single_index_and_scale():
+    """Per-document segments must score exactly like one global index, and stay fast at scale."""
+    import random
+    import time
+
+    rng = random.Random(0)
+    vocab = [f"w{i}" for i in range(5000)]
+
+    def mk(i, doc):
+        return ChunkRecord(id=i, chunk_id=f"{doc}:{i}", document_id=doc, document_name=doc, chunk_index=i,
+                           text=" ".join(rng.choices(vocab, k=80)))
+
+    chunks = [mk(i, f"doc{i % 7}") for i in range(50_000)]
+    whole = BM25Index()
+    whole.build(chunks)
+    incremental = BM25Index()
+    for d in {c.document_id for c in chunks}:
+        incremental.add_document(d, [c for c in chunks if c.document_id == d])
+
+    q = "w1 w42 w999 w4000"
+    start = time.perf_counter()
+    hits = incremental.search(q, k=20)
+    elapsed = time.perf_counter() - start
+    assert hits == whole.search(q, k=20)
+    assert len(hits) == 20 and hits == sorted(hits, key=lambda h: -h[1])
+    assert elapsed < 0.25, f"BM25 query took {elapsed:.3f}s on 50k chunks"
+
+
+def test_bm25_remove_document_restores_statistics():
+    a = [ChunkRecord(id=1, chunk_id="a:0", document_id="a", document_name="a", chunk_index=0, text="alpha beta")]
+    b = [ChunkRecord(id=2, chunk_id="b:0", document_id="b", document_name="b", chunk_index=0, text="alpha gamma")]
+    only_a = BM25Index()
+    only_a.build(a)
+    idx = BM25Index()
+    idx.add_document("a", a)
+    idx.add_document("b", b)
+    idx.remove_document("b")
+    assert idx.search("alpha beta", 5) == only_a.search("alpha beta", 5)
+    assert idx.size == 1 and idx.document_ids() == {"a"}

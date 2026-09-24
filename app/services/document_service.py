@@ -1,24 +1,38 @@
 """Document ingestion and lifecycle.
 
-    bytes -> validate -> hash/de-dup -> parse -> clean -> chunk -> embed
-          -> SQLite (source of truth) -> FAISS (vectors) -> notify listeners (BM25)
+    bytes -> validate -> hash/de-dup -> register (status=processing)
+          -> parse -> clean -> chunk -> embed in batches (progress)
+          -> SQLite chunks (source of truth) -> FAISS vectors -> status=ready -> notify (BM25)
 
-Write ordering: vectors are computed *before* the SQLite transaction, so an
-embedding failure leaves no partial state. If the FAISS write fails after the
-SQLite commit, we compensate by deleting the document again.
+Two entry points share one pipeline:
+  * `submit()`: returns immediately; a single background worker does the
+    heavy lifting. Used by the API so a 100 MB PDF never blocks a request, and
+    one worker means indexing never competes with itself for CPU.
+  * `ingest()`: synchronous; used for the seed corpus, the eval harness and tests.
+
+Failure handling: vectors are computed before any chunk is written, so an
+embedding failure leaves no partial chunks. If the FAISS write fails after
+the SQLite insert, the chunks are deleted again (compensating action).
+Background failures are kept as `status=failed` with the error so the user
+can see what happened; synchronous failures remove the document entirely.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import sqlite3
 import threading
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import numpy as np
 
 from app.core.config import Settings
 from app.core.errors import (
+    AppError,
     DocumentNotFoundError,
     DocumentParseError,
     DuplicateDocumentError,
@@ -30,44 +44,109 @@ from app.ingestion.parsers import PageText, detect_file_type, parse_document
 from app.retrieval.dense import DenseIndex
 from app.retrieval.embeddings import Embedder
 from app.schemas.documents import DocumentInfo
+from app.services.priority import QueryActivity
 from app.storage.document_store import DocumentStore
 
 logger = logging.getLogger(__name__)
 
+EMBED_BATCH = 256  # chunks per embedding call: bounds memory and gives progress updates
+
+
+class _Cancelled(Exception):
+    """The document was deleted while it was being processed."""
+
 
 class DocumentService:
-    def __init__(self, settings: Settings, store: DocumentStore, embedder: Embedder, dense_index: DenseIndex) -> None:
+    def __init__(self, settings: Settings, store: DocumentStore, embedder: Embedder, dense_index: DenseIndex,
+                 activity: QueryActivity | None = None) -> None:
         self.settings = settings
         self.store = store
         self.embedder = embedder
         self.dense_index = dense_index
-        self._write_lock = threading.Lock()
+        self._write_lock = threading.RLock()  # re-entrant: rollback runs inside the write section
         self._listeners: list[Callable[[], None]] = []
+        self._executor: ThreadPoolExecutor | None = None
+        self._progress: dict[str, tuple[str, float | None]] = {}  # doc id -> (stage, fraction)
+        self._cancelled: set[str] = set()
+        self.activity = activity or QueryActivity()
 
     def add_listener(self, callback: Callable[[], None]) -> None:
-        """Register a callback fired after the corpus changes (e.g. BM25 rebuild)."""
+        """Register a callback fired after the corpus changes (e.g. BM25 update)."""
         self._listeners.append(callback)
 
     def _notify(self) -> None:
         for callback in self._listeners:
             callback()
 
-    # --- ingestion -----------------------------------------------------------
+    # --- entry points ------------------------------------------------------------
     def ingest(self, filename: str, content: bytes) -> DocumentInfo:
+        """Synchronously index a document. On failure nothing is left behind and the error is raised."""
+        info, file_type = self._register(filename, content)
+        try:
+            self._process(info.id, info.filename, file_type, content)
+        except Exception:
+            self._discard(info.id)
+            raise
+        return self._with_progress(self.store.get_document(info.id))
+
+    def submit(self, filename: str, content: bytes) -> DocumentInfo:
+        """Validate and register now; parse/embed/index in the background worker."""
+        info, file_type = self._register(filename, content)
+        self._progress[info.id] = ("queued", None)
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest")
+        self._executor.submit(self._process_in_background, info.id, info.filename, file_type, content)
+        return self._with_progress(info)
+
+    def shutdown(self) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+
+    # --- pipeline ------------------------------------------------------------------
+    def _register(self, filename: str, content: bytes) -> tuple[DocumentInfo, str]:
         filename = Path(filename).name  # never trust client-supplied paths
         file_type = detect_file_type(filename)
         max_bytes = int(self.settings.max_upload_mb * 1024 * 1024)
         if len(content) > max_bytes:
             raise FileTooLargeError(f"'{filename}' exceeds the {self.settings.max_upload_mb:g} MB upload limit.")
+        if not content:
+            raise DocumentParseError(f"'{filename}' is empty.")
 
         content_hash = hashlib.sha256(content).hexdigest()
         existing = self.store.get_by_hash(content_hash)
-        if existing is not None:
-            raise DuplicateDocumentError(
-                f"'{filename}' is already indexed as '{existing.filename}'.",
-                details={"document_id": existing.id},
-            )
+        if existing is not None and existing.status == "failed":
+            self._discard(existing.id)  # a retry of a failed upload is allowed
+        elif existing is not None:
+            state = "is still being indexed" if existing.status == "processing" else "is already indexed"
+            raise DuplicateDocumentError(f"'{filename}' {state} as '{existing.filename}'.",
+                                         details={"document_id": existing.id})
+        try:
+            info = self.store.create_document(document_id=uuid.uuid4().hex[:12], filename=filename,
+                                              file_type=file_type, content_hash=content_hash, size_bytes=len(content))
+        except sqlite3.IntegrityError as exc:  # lost a race with a concurrent upload of the same bytes
+            raise DuplicateDocumentError(f"'{filename}' is already being indexed.") from exc
+        return info, file_type
 
+    def _process_in_background(self, document_id: str, filename: str, file_type: str, content: bytes) -> None:
+        try:
+            self._process(document_id, filename, file_type, content)
+        except _Cancelled:
+            logger.info("ingestion cancelled", extra={"document_id": document_id})
+        except Exception as exc:
+            message = exc.message if isinstance(exc, AppError) else f"Indexing failed: {type(exc).__name__}: {exc}"
+            self._rollback_chunks(document_id)
+            self.store.set_status(document_id, "failed", message)
+            logger.warning("ingestion failed", extra={"document_id": document_id, "doc_name": filename, "error": message})
+        finally:
+            self._progress.pop(document_id, None)
+            self._cancelled.discard(document_id)
+
+    def _check_cancelled(self, document_id: str) -> None:
+        if document_id in self._cancelled:
+            raise _Cancelled()
+
+    def _process(self, document_id: str, filename: str, file_type: str, content: bytes) -> None:
+        self._progress[document_id] = ("parsing", None)
         parsed = parse_document(filename, content)
         pages = [PageText(clean_text(p.text, file_type=file_type), p.page) for p in parsed.pages]
         chunks = chunk_pages(pages, self.settings.chunk_size, self.settings.chunk_overlap)
@@ -75,53 +154,79 @@ class DocumentService:
             hint = " (scanned PDFs need OCR, which is not supported)" if file_type == "pdf" else ""
             raise DocumentParseError(f"No extractable text found in '{filename}'{hint}.")
 
-        vectors = self.embedder.embed([c.text for c in chunks])
+        texts = [c.text for c in chunks]
+        batches = []
+        for start in range(0, len(texts), EMBED_BATCH):
+            self._check_cancelled(document_id)
+            self.activity.wait_until_idle(max_wait_s=10.0)  # let live queries use the CPU first
+            self._progress[document_id] = ("embedding", start / len(texts))
+            batches.append(self.embedder.embed(texts[start : start + EMBED_BATCH]))
+        vectors = np.vstack(batches)
 
-        document_id = uuid.uuid4().hex[:12]
+        self._progress[document_id] = ("indexing", 1.0)
         with self._write_lock:
-            # Re-check under the lock: two concurrent uploads of the same file.
-            if self.store.get_by_hash(content_hash) is not None:
-                raise DuplicateDocumentError(f"'{filename}' is already indexed.")
-            records = self.store.add_document(
-                document_id=document_id,
-                filename=filename,
-                file_type=file_type,
-                content_hash=content_hash,
-                size_bytes=len(content),
-                num_pages=parsed.num_pages,
-                chunks=chunks,
-            )
+            self._check_cancelled(document_id)
+            records = self.store.add_chunks(document_id, chunks, parsed.num_pages)
             try:
                 self.dense_index.add([r.id for r in records], vectors)
                 self.dense_index.save()
             except Exception:
-                self.store.delete_document(document_id)
-                self.dense_index.remove([r.id for r in records])
+                self._rollback_chunks(document_id)
                 raise
+            self.store.set_status(document_id, "ready")
         self._notify()
+        logger.info("document ingested", extra={"document_id": document_id, "doc_name": filename,
+                                                "chunks": len(records), "file_type": file_type})
 
-        info = self.store.get_document(document_id)
+    def _rollback_chunks(self, document_id: str) -> None:
+        ids = [c.id for c in self.store.get_document_chunks(document_id)]
+        if ids:
+            with self._write_lock:
+                self.dense_index.remove(ids)
+                self.dense_index.save()
+                self.store.delete_chunks(document_id)
+
+    def _discard(self, document_id: str) -> None:
+        with self._write_lock:
+            chunk_ids = self.store.delete_document(document_id)
+            if chunk_ids:
+                self.dense_index.remove(chunk_ids)
+                self.dense_index.save()
+
+    # --- lifecycle -----------------------------------------------------------------
+    def _with_progress(self, info: DocumentInfo | None) -> DocumentInfo:
         assert info is not None
-        logger.info(
-            "document ingested",
-            extra={"document_id": document_id, "doc_name": filename, "chunks": len(records), "file_type": file_type},
-        )
-        return info
+        if info.status != "processing":  # progress is only meaningful while processing
+            return info
+        stage, frac = self._progress.get(info.id, ("queued", None))
+        return info.model_copy(update={"stage": stage, "progress": frac})
 
-    # --- lifecycle -----------------------------------------------------------
+    def get(self, document_id: str) -> DocumentInfo:
+        info = self.store.get_document(document_id)
+        if info is None:
+            raise DocumentNotFoundError(f"Document '{document_id}' not found.")
+        return self._with_progress(info)
+
     def list_documents(self) -> list[DocumentInfo]:
-        return self.store.list_documents()
+        return [self._with_progress(d) for d in self.store.list_documents()]
 
     def delete(self, document_id: str) -> int:
+        info = self.store.get_document(document_id)
+        if info is None:
+            raise DocumentNotFoundError(f"Document '{document_id}' not found.")
+        if info.status == "processing":
+            self._cancelled.add(document_id)  # the worker stops at its next checkpoint
         with self._write_lock:
-            if self.store.get_document(document_id) is None:
-                raise DocumentNotFoundError(f"Document '{document_id}' not found.")
             chunk_ids = self.store.delete_document(document_id)
             self.dense_index.remove(chunk_ids)
             self.dense_index.save()
         self._notify()
         logger.info("document deleted", extra={"document_id": document_id, "chunks": len(chunk_ids)})
         return len(chunk_ids)
+
+    def recover_interrupted(self) -> int:
+        """Startup: documents left 'processing' by a restart are marked failed (their bytes are gone)."""
+        return self.store.fail_interrupted()
 
     def sync_index(self) -> int:
         """Make FAISS consistent with SQLite (startup self-heal).
@@ -138,8 +243,9 @@ class DocumentService:
         logger.warning("dense index out of sync with document store; rebuilding", extra={"chunks": len(chunks)})
         with self._write_lock:
             self.dense_index.reset()
-            if chunks:
-                self.dense_index.add([c.id for c in chunks], self.embedder.embed([c.text for c in chunks]))
+            for start in range(0, len(chunks), EMBED_BATCH):
+                batch = chunks[start : start + EMBED_BATCH]
+                self.dense_index.add([c.id for c in batch], self.embedder.embed([c.text for c in batch]))
             self.dense_index.save()
         return len(chunks)
 

@@ -18,6 +18,7 @@ from app.retrieval.embeddings import Embedder, SentenceTransformerEmbedder
 from app.retrieval.hybrid import HybridRetriever
 from app.retrieval.reranker import CrossEncoderReranker, Reranker
 from app.services.document_service import DocumentService
+from app.services.priority import QueryActivity
 from app.services.query_service import QueryService
 from app.storage.document_store import DocumentStore
 
@@ -37,6 +38,7 @@ class Container:
         """Warm models, self-heal the vector index, build BM25, ingest seed docs."""
         if self.settings.warmup_models:
             self._warmup()
+        interrupted = self.documents.recover_interrupted()
         rebuilt = self.documents.sync_index()
         self.retriever.refresh_sparse_index()
         seeded = []
@@ -44,7 +46,8 @@ class Container:
             seeded = self.documents.ingest_directory(self.settings.seed_dir)
         logger.info(
             "startup complete",
-            extra={"chunks": self.store.count_chunks(), "vectors_rebuilt": rebuilt, "seeded_documents": len(seeded)},
+            extra={"chunks": self.store.count_chunks(), "vectors_rebuilt": rebuilt, "seeded_documents": len(seeded),
+                   "interrupted_uploads_marked_failed": interrupted},
         )
 
     def _warmup(self) -> None:
@@ -56,6 +59,7 @@ class Container:
             logger.warning("model warmup failed", extra={"error": str(exc)})
 
     def shutdown(self) -> None:
+        self.documents.shutdown()
         self.store.close()
 
 
@@ -69,12 +73,13 @@ def build_container(
     store = DocumentStore(settings.db_path)
     embedder = embedder or SentenceTransformerEmbedder(settings.embedding_model)
     if reranker is None and settings.reranker_enabled:
-        reranker = CrossEncoderReranker(settings.reranker_model)
+        reranker = CrossEncoderReranker(settings.reranker_model, max_length=settings.reranker_max_length)
     dense = DenseIndex(settings.index_dir / "dense.faiss")
     metrics = MetricsRegistry()
+    activity = QueryActivity()  # shared: queries take priority over background indexing
 
-    documents = DocumentService(settings, store, embedder, dense)
+    documents = DocumentService(settings, store, embedder, dense, activity)
     retriever = HybridRetriever(settings, store, embedder, dense, BM25Index(), reranker)
     documents.add_listener(retriever.refresh_sparse_index)
-    queries = QueryService(settings, llm or GroqLLM(settings), retriever, metrics)
+    queries = QueryService(settings, llm or GroqLLM(settings), retriever, metrics, activity)
     return Container(settings, store, documents, retriever, queries, metrics)

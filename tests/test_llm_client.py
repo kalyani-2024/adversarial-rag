@@ -65,3 +65,26 @@ def test_wait_budget_caps_retries(monkeypatch):
 def test_missing_api_key():
     with pytest.raises(LLMConfigError):
         GroqLLM(Settings(_env_file=None, groq_api_key=None)).complete([], purpose="t")
+
+
+def _chunk(content=None, usage=None, reasoning=None):
+    delta = SimpleNamespace(content=content, reasoning=reasoning)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)] if (content or reasoning) else [], usage=usage)
+
+
+def test_stream_forwards_content_only_and_reads_usage(monkeypatch):
+    settings = Settings(_env_file=None, groq_api_key="k")
+    chunks = [_chunk(reasoning="thinking…"), _chunk("Hello "), _chunk("world [1]."),
+              _chunk(usage=SimpleNamespace(prompt_tokens=11, completion_tokens=4))]
+    llm, _ = _client(settings, [iter(chunks)], monkeypatch)
+    seen = []
+    resp = llm.stream([{"role": "user", "content": "x"}], purpose="generate", on_token=seen.append)
+    assert seen == ["Hello ", "world [1]."] and resp.text == "Hello world [1]."
+    assert (resp.prompt_tokens, resp.completion_tokens) == (11, 4)
+
+
+def test_stream_retries_only_when_opening(monkeypatch):
+    settings = Settings(_env_file=None, groq_api_key="k", llm_max_retries=2)
+    llm, sleeps = _client(settings, [_rate_limit("1"), iter([_chunk("ok")])], monkeypatch)
+    resp = llm.stream([{"role": "user", "content": "x"}], purpose="generate", on_token=lambda t: None)
+    assert resp.text == "ok" and resp.attempts == 2 and len(sleeps) == 1

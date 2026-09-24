@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from app.core.llm import LLMClient, LLMResponse
+from app.core.llm import LLMClient, LLMResponse, TokenCallback
 from app.generation.prompts import GENERATOR_SYSTEM, GENERATOR_USER, REGENERATE_USER
 from app.schemas.query import INSUFFICIENT_EVIDENCE_ANSWER, Citation
 from app.schemas.reliability import Critique
@@ -120,8 +120,13 @@ def generate_answer(
     temperature: float,
     critique: Critique | None = None,
     previous_answer: str | None = None,
+    on_token: TokenCallback | None = None,
 ) -> GeneratedAnswer:
-    """Initial generation, or critique-guided regeneration when `critique` is given."""
+    """Initial generation, or critique-guided regeneration when `critique` is given.
+
+    With `on_token`, raw text deltas are streamed as they arrive; the returned
+    answer is still post-processed (citations validated, abstention detected).
+    """
     context = format_context(chunks)
     if critique is not None and previous_answer is not None:
         user = REGENERATE_USER.format(
@@ -136,11 +141,11 @@ def generate_answer(
         user = GENERATOR_USER.format(context=context, question=question)
         purpose = "generate"
 
-    resp = llm.complete(
-        [{"role": "system", "content": GENERATOR_SYSTEM}, {"role": "user", "content": user}],
-        purpose=purpose,
-        temperature=temperature,
-    )
+    messages = [{"role": "system", "content": GENERATOR_SYSTEM}, {"role": "user", "content": user}]
+    if on_token is not None and hasattr(llm, "stream"):
+        resp = llm.stream(messages, purpose=purpose, temperature=temperature, on_token=on_token)
+    else:
+        resp = llm.complete(messages, purpose=purpose, temperature=temperature)
     raw = resp.text.strip()
     if not raw or is_abstention(raw):
         return GeneratedAnswer(INSUFFICIENT_EVIDENCE_ANSWER, [], [], True, resp)

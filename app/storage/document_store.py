@@ -62,32 +62,68 @@ class DocumentStore:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._lock = threading.RLock()
 
+    def _migrate(self) -> None:
+        """Add columns introduced after v2.0 to existing databases (idempotent)."""
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(documents)")}
+        with self._conn:
+            if "status" not in cols:  # processing | ready | failed
+                self._conn.execute("ALTER TABLE documents ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'")
+            if "error" not in cols:
+                self._conn.execute("ALTER TABLE documents ADD COLUMN error TEXT")
+
     # --- writes ----------------------------------------------------------------
-    def add_document(
-        self,
-        *,
-        document_id: str,
-        filename: str,
-        file_type: str,
-        content_hash: str,
-        size_bytes: int,
-        num_pages: int | None,
-        chunks: list[TextChunk],
-    ) -> list[ChunkRecord]:
-        """Insert a document and its chunks atomically; returns the stored chunks (with ids)."""
+    def create_document(
+        self, *, document_id: str, filename: str, file_type: str, content_hash: str, size_bytes: int,
+        status: str = "processing",
+    ) -> DocumentInfo:
+        """Register a document before its (possibly slow) processing starts.
+
+        The UNIQUE content_hash makes this the de-duplication point: a second
+        upload of the same bytes fails here even while the first is processing.
+        """
         created = datetime.now(timezone.utc).isoformat()
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (document_id, filename, file_type, content_hash, size_bytes, num_pages, created),
+                "INSERT INTO documents (id, filename, file_type, content_hash, size_bytes, num_pages, created_at, status)"
+                " VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+                (document_id, filename, file_type, content_hash, size_bytes, created, status),
             )
+        info = self.get_document(document_id)
+        assert info is not None
+        return info
+
+    def add_chunks(self, document_id: str, chunks: list[TextChunk], num_pages: int | None) -> list[ChunkRecord]:
+        """Insert all chunks of a document in one transaction; returns them with ids."""
+        with self._lock, self._conn:
             self._conn.executemany(
                 "INSERT INTO chunks (document_id, chunk_index, page, text) VALUES (?, ?, ?, ?)",
                 [(document_id, c.chunk_index, c.page, c.text) for c in chunks],
             )
+            self._conn.execute("UPDATE documents SET num_pages = ? WHERE id = ?", (num_pages, document_id))
         return self.get_document_chunks(document_id)
+
+    def set_status(self, document_id: str, status: str, error: str | None = None) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE documents SET status = ?, error = ? WHERE id = ?", (status, error, document_id))
+
+    def fail_interrupted(self) -> int:
+        """Mark documents left 'processing' by a crash/restart as failed. Returns how many."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE documents SET status = 'failed', error = 'Interrupted by a server restart; please re-upload.'"
+                " WHERE status = 'processing'"
+            )
+            self._conn.execute(
+                "DELETE FROM chunks WHERE document_id IN (SELECT id FROM documents WHERE status = 'failed')"
+            )
+        return cur.rowcount
+
+    def delete_chunks(self, document_id: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
 
     def delete_document(self, document_id: str) -> list[int]:
         """Delete a document (chunks cascade). Returns the removed chunk ids."""
@@ -111,7 +147,7 @@ class DocumentStore:
     def _list_documents(self, where: str = "", params: tuple = ()) -> list[DocumentInfo]:
         sql = f"""
             SELECT d.id, d.filename, d.file_type, d.content_hash, d.size_bytes, d.num_pages,
-                   d.created_at, COUNT(c.id)
+                   d.created_at, COUNT(c.id), d.status, d.error
             FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
             {where}
             GROUP BY d.id ORDER BY d.created_at DESC
@@ -122,6 +158,7 @@ class DocumentStore:
             DocumentInfo(
                 id=r[0], filename=r[1], file_type=r[2], content_hash=r[3], size_bytes=r[4],
                 num_pages=r[5], created_at=datetime.fromisoformat(r[6]), num_chunks=r[7],
+                status=r[8], error=r[9],
             )
             for r in rows
         ]
