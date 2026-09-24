@@ -58,11 +58,13 @@ class Settings(BaseSettings):
     bm25_top_k: int = Field(20, ge=1)
     rrf_k: int = Field(60, ge=1)
     final_top_k: int = Field(5, ge=1, le=20)
+    rerank_candidates: int = Field(20, ge=1, description="Fused candidates sent to the reranker")
     reranker_enabled: bool = True
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     # Evidence gate: below these scores we abstain instead of calling the LLM.
-    min_rerank_score: float = -2.0
-    min_dense_score: float = 0.30  # used when the reranker is disabled/failed
+    # Calibrated on ms-marco-MiniLM logits: on-topic >= -3.2, off-topic ~ -11 (see docs).
+    min_rerank_score: float = -5.0
+    min_dense_score: float = 0.25  # used when the reranker is disabled/failed
 
     # --- Query rewrite ------------------------------------------------------
     query_rewrite_enabled: bool = True
