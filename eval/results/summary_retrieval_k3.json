@@ -1,0 +1,75 @@
+{
+  "meta": {
+    "timestamp": "20260924T151443Z",
+    "dataset": "golden.jsonl",
+    "n_items": 22,
+    "corpus": [
+      "drift_detection_paper.txt"
+    ],
+    "llm_model": "openai/gpt-oss-120b",
+    "judge_model": "qwen/qwen3.8-27b",
+    "critic_model": "openai/gpt-oss-20b",
+    "eval_judge_model": "openai/gpt-oss-120b",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "rrf_k": 60,
+    "k": 3,
+    "max_retries": 2,
+    "thresholds": {
+      "faithfulness": 0.8,
+      "relevance": 0.7,
+      "completeness": 0.6,
+      "fail_on_unsupported_claims": true
+    }
+  },
+  "retrieval_ablation": {
+    "dense_only": {
+      "n": 19,
+      "hit@3": 0.7895,
+      "evidence_recall@3": 0.7632,
+      "mrr": 0.6404,
+      "latency_p50_ms": 37.9,
+      "misses": [
+        "q05",
+        "q11",
+        "q17",
+        "q19"
+      ]
+    },
+    "bm25_only": {
+      "n": 19,
+      "hit@3": 0.9474,
+      "evidence_recall@3": 0.9474,
+      "mrr": 0.8596,
+      "latency_p50_ms": 0.3,
+      "misses": [
+        "q19"
+      ]
+    },
+    "hybrid_rrf": {
+      "n": 19,
+      "hit@3": 0.8947,
+      "evidence_recall@3": 0.8684,
+      "mrr": 0.7719,
+      "latency_p50_ms": 28.4,
+      "misses": [
+        "q17",
+        "q19"
+      ]
+    },
+    "hybrid_rrf_rerank": {
+      "n": 19,
+      "hit@3": 0.8421,
+      "evidence_recall@3": 0.8421,
+      "mrr": 0.7632,
+      "latency_p50_ms": 1654.7,
+      "misses": [
+        "q11",
+        "q17",
+        "q19"
+      ]
+    }
+  },
+  "summary": {},
+  "judge_calibration": null
+}
