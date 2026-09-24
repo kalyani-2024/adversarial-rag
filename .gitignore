@@ -21,7 +21,7 @@ data/
 faiss_index/
 
 # Eval artifacts that contain raw model output
-eval/results/*.jsonl
+eval/runs/
 
 # OS generated files
 .DS_Store

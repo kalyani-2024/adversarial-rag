@@ -57,6 +57,8 @@ class Trace:
         self.spans: list[Span] = []
         self.usage = TokenUsage()
         self.llm_calls_by_purpose: dict[str, int] = {}
+        self.llm_retries = 0
+        self.throttle_ms = 0.0
 
     def _offset_ms(self) -> float:
         return (time.perf_counter() - self._t0) * 1000
@@ -95,6 +97,8 @@ class Trace:
         self.usage.prompt_tokens += resp.prompt_tokens
         self.usage.completion_tokens += resp.completion_tokens
         self.llm_calls_by_purpose[purpose] = self.llm_calls_by_purpose.get(purpose, 0) + 1
+        self.llm_retries += resp.attempts - 1
+        self.throttle_ms += resp.throttle_ms
 
     def total_ms(self) -> float:
         return self._offset_ms()
@@ -128,6 +132,8 @@ class Trace:
             llm_calls=self.usage.llm_calls,
             prompt_tokens=self.usage.prompt_tokens,
             completion_tokens=self.usage.completion_tokens,
+            llm_retries=self.llm_retries,
+            throttle_ms=round(self.throttle_ms, 1),
             estimated_cost_usd=cost,
         )
 

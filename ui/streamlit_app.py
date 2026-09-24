@@ -279,6 +279,9 @@ def render_trace(resp: dict) -> None:
                 help="Set PRICE_PROMPT_PER_1M / PRICE_COMPLETION_PER_1M on the API to estimate cost.")
     st.caption(f"request_id `{t['request_id']}` · retrieval {t['retrieval_ms']:.0f}ms · rerank {t['rerank_ms']:.0f}ms · "
                f"generation {t['generation_ms']:.0f}ms · evaluation {t['evaluation_ms']:.0f}ms · chunks {t['retrieved_chunks']}")
+    if t.get("throttle_ms"):
+        st.caption(f"⚠️ {t['throttle_ms'] / 1000:.1f}s of the total was spent waiting on LLM provider rate limits "
+                   f"({t['llm_retries']} retried call{'s' if t['llm_retries'] != 1 else ''}).")
     with st.expander("Span attributes"):
         st.json(spans, expanded=False)
 

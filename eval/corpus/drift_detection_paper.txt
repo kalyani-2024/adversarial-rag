@@ -1,0 +1,141 @@
+Personalized Behavioral Drift Detection for Fair and Explainable Online Exam Integrity
+Authors: Srivathsa H, Mili Mohan, Irene M, Kalyani B S (BITS Pilani Dubai Campus)
+Venue: LAK '27, March 2027
+
+ABSTRACT
+Online examinations have become the new normal for higher education. Existing tools like webcam-based monitoring or global rule-based approaches treat all students alike, causing disparities for ethnic minorities, special needs students, and non-traditional testing environments. We propose a framework for detecting cheating in online examinations using a supervised Transformer classifier trained on action-level sequences as the primary detector, with an inference-time per-student blending step producing personalised drift scores while benefiting from population-level supervised training. Anomalous sessions are constructed by perturbing real EdNet clickstreams (preserving question ordering, item identifiers, and action counts while modifying only timing patterns), and further diversified by a conditional GAN trained on those perturbations. SHAP values provide explanations of which questions trigger flags. We evaluate on ~15,000 students sampled from the EdNet-KT2 clickstream dataset, augmented with OULAD demographic profiles and GAN-enhanced synthetic anomalies. The proposed Transformer achieves ROC-AUC 0.959 (95% CI [0.950, 0.968]), recall 0.894, and precision@10 = 1.00 on a held-out test split composed entirely of synthetic anomalies. Detection performance is comparable to a strong supervised BiLSTM baseline and substantially better than Isolation Forest, One-Class SVM, a feed-forward autoencoder, a rule-based detector, and an LSTM autoencoder. After per-group threshold calibration on synthetically sampled OULAD demographic groups, all four demographic axes achieve DPR = 1.00 and EOD = 0.00 on the test split. A Streamlit prototype dashboard presents ranked anomaly scores, exam timelines, and SHAP-based explanations.
+
+INTRODUCTION
+Remote examinations are now standard in higher education. Commercial proctoring tools (ProctorU, ExamSoft, Respondus LockDown Browser) rely on webcam feeds, screen recording, and audio capture, and have well-documented bias against students of color, students with disabilities, and non-standard testing conditions. Clickstream analytics has been used for engagement and at-risk learner prediction, but exam integrity needs fine-grained per-question modeling within a single session. Prior anomaly detection work used global statistical baselines that misclassify honest students who simply differ from the average. We propose personalized behavioral drift detection: instead of asking "Does this student look different from other students?" we ask "Does this session look different from this student's prior sessions?". The detector is a supervised Transformer trained end-to-end with synthetic anomaly labels.
+
+Why personalized drift matters: a student whose normal pattern is to answer every question in 10–15 seconds with low variance will repeatedly be flagged by a population-based detector calibrated to a 30-second mean. The personalized framework asks whether THIS session differs from THIS student's history.
+
+CONTRIBUTIONS
+- A Transformer-based supervised detector on action-level clickstream sequences with inference-time per-student blending (Eq. 4), achieving ROC-AUC 0.959 (95% CI [0.950, 0.968]) and recall 0.894 on synthetic-anomaly evaluation.
+- A behavioural feature extractor producing sequential (per-question) and classical (session-level) features.
+- A GAN-augmented synthetic-anomaly pipeline seeded by literature-grounded rule-based anomalies.
+- A post-hoc fairness-aware threshold calibration mechanism achieving DPR >= 0.80 and EOD <= 0.10 across gender, age band, IMD band, and disability status.
+- A SHAP-based explainability component producing question-level and feature-level attributions, plus a Streamlit dashboard.
+
+PROPOSED FRAMEWORK
+Pipeline: Raw Clickstream -> Feature Extraction -> {Transformer Classifier (ours) | Baselines} -> Drift Score -> Fairness Calibration -> SHAP Explanations -> Dashboard.
+
+Behavioural Feature Extraction:
+- Session-level features (10 features, flat vector): response-time average, variance, IQR, entropy; percentage of answer-changes; keystroke rhythm; pause time; percentage of re-visited questions; speed peaks. Used by rule-based, Isolation Forest, One-Class SVM, and Standard Autoencoder.
+- Action-level sequence features (10 features x up to 100 actions): interaction gap (raw and log-normalized), z-score of gap for the session, answer-change indicator, same-question-as-previous indicator, normalized question number, normalized action number, prior actions on current question, fraction of session time elapsed, long-pause indicator (>30s). Used by Transformer, LSTM-AE, BiLSTM. Normalized by z-score on training-set CLEAN data only.
+
+Main Detector - Transformer Classifier:
+Configuration: d_model=128, 4 attention heads, 3 encoder layers, dropout 0.2. Mean-pooling over valid positions, two-layer MLP head, sigmoid for anomaly logit. Adam optimizer, binary cross-entropy with positive class weight, gradient clipping (||g|| <= 1), early stopping with patience 10 epochs.
+
+Personalised inference-time scoring: Equation 4 blends per-student z-score with population z-score:
+D(s) = lambda_u * (y_hat_s - y_bar_u)/sigma_u + (1 - lambda_u) * (y_hat_s - y_bar_pop)/sigma_pop, where lambda_u = min(1, n_u/N_min), N_min = 5.
+
+Baselines (six): Rule-Based (thresholds on response time, answer-change rate, burst ratio); Isolation Forest; One-Class SVM with RBF kernel; Standard Autoencoder (flattened session features); LSTM Autoencoder (2 layers, hidden 96, latent 32, dropout 0.2, masked-MSE on normal sessions only); supervised BiLSTM Classifier (same training paradigm as Transformer but stacked recurrence). LSTM-AE personalized for students with >=5 sessions.
+
+Fairness-Aware Threshold Calibration:
+tau_g_k = tau + alpha * (D_bar_g_k - D_bar_global), where alpha is searched on [0,1] grid. Adjusted threshold is used per attribute only if it improves DPR and EOD; otherwise global threshold applied. An in-processing fairness technique using gradient reversal demographic discriminator was tested but degraded latent-space quality and was deactivated.
+
+SHAP Explanations: Kernel SHAP with 200 background samples, computed only for flagged sessions. Aggregated feature-level (sum over time steps) and question-level (sum over features).
+
+EXPERIMENTAL DESIGN
+Datasets:
+- EdNet-KT2: 297,000 students, 13,000 exercises. We sample 15,000 students; segment into pseudo-exam sessions of 20–50 questions using a 30-minute gap heuristic.
+- OULAD demographics (32,593 students): gender, age band, IMD band, disability status, region. Demographics linked to EdNet students synthetically by sampling marginal distributions; sparse groups merged (age band -> binary, IMD band -> {Low, Medium, High, Unknown}). Small controlled per-group perturbations introduced to create a calibration signal.
+
+Synthetic Anomaly Pipeline:
+All anomalies constructed by perturbing real EdNet clickstreams; only timing patterns modified. Five primary anomaly families plus one supplementary:
+- answer_copying: uniform 3.5–7s pace with low variance.
+- lookup_behaviour: 15–45s pause followed by 2–4-action fast burst.
+- partial_session_cheating: transition point at 35–65% of session, gaps compressed by 1.5–3x after.
+- pre_known_answers: whole-session compression by 1.5–3x.
+- panic_compression: end-session compression starting at 60–75%, up to 3.5x.
+- excessive_answer_changes (supplementary).
+Each anomalous session receives one primary perturbation and, with probability 0.5, an additional excessive-changes overlay. 1-second minimum-response floor. Contamination rate: 15% (vs. typical 10%).
+
+Conditional GAN: 64-dim Gaussian noise + 16-dim label embedding -> 96-dim initial state, 2-layer GRU (hidden 96, dropout 0.1), linear projection to 10 features. Sigmoid head predicts effective sequence length [5, T]. Discriminator: bidirectional 2-layer GRU (hidden 96). Non-saturating GAN loss, Adam (beta1=0.5, lr 2e-4), batch 512, label smoothing 0.1, 40 epochs. 50% of training-split anomalies replaced by GAN samples; validation/test stay rule-based only.
+
+Splits: Chronological per-student 70/15/15 train/val/test. Autoencoders trained only on normal training sessions; supervised models trained on full train. Threshold tuned by F1 on validation.
+
+Hardware: NVIDIA RTX 4060 GPU.
+
+Hyperparameters table:
+- Transformer d_model/heads/layers: 128/4/3, dropout 0.2.
+- BiLSTM hidden/layers: 96/2.
+- LSTM-AE hidden/latent/layers: 96/32/2.
+- Optimizer: Adam, lr 1e-3, weight decay 1e-4.
+- Batch size/epochs (supervised): 256 / 50 (early stop patience 10).
+- LSTM-AE epochs: up to 300 (patience 30).
+- Action-level max sequence length T = 100.
+- Per-action features F = 10.
+- Synthetic contamination 15% (50% GAN-augmented in train).
+- SHAP background samples: 200.
+
+RESULTS - Detection Performance (Table 2, held-out test split, 95% bootstrap CIs over 1,000 resamples):
+- Rule-Based: ROC-AUC 0.588 [0.564, 0.611]; PR-AUC 0.171; F1 0.010; Precision 0.205; Recall 0.485; P@10 0.00; P@50 0.14.
+- LSTM Autoencoder: ROC-AUC 0.601; PR-AUC 0.218; F1 0.246; Precision 0.141; Recall 0.994; P@10 0.20; P@50 0.32.
+- Standard Autoencoder: ROC-AUC 0.718; PR-AUC 0.451; F1 0.348; Precision 0.240; Recall 0.637; P@10 0.90; P@50 0.96.
+- One-Class SVM: ROC-AUC 0.719; PR-AUC 0.463; F1 0.441; Precision 0.377; Recall 0.530; P@10 1.00; P@50 0.94.
+- Isolation Forest: ROC-AUC 0.768; PR-AUC 0.377; F1 0.410; Precision 0.293; Recall 0.681; P@10 0.30; P@50 0.58.
+- BiLSTM Classifier (personalised): ROC-AUC 0.951 [0.941, 0.960]; PR-AUC 0.771; F1 0.725; Precision 0.624; Recall 0.869; P@10 0.80; P@50 0.86.
+- Transformer (Ours, personalised): ROC-AUC 0.959 [0.950, 0.968]; PR-AUC 0.784 [0.745, 0.824]; F1 0.774 [0.749, 0.799]; Precision 0.682; Recall 0.894; P@10 1.00; P@50 0.82.
+
+Architecture ablation (Table 3, Transformer vs BiLSTM, identical pipeline):
+- BiLSTM personalised: ROC-AUC 0.951; PR-AUC 0.771; F1 0.725; Recall 0.869.
+- Transformer personalised: ROC-AUC 0.959; PR-AUC 0.784; F1 0.774; Recall 0.894.
+- Delta (TF - BiLSTM): +0.008 ROC-AUC, +0.013 PR-AUC, +0.049 F1, +0.025 Recall.
+
+Anomaly-source ablation (Table 4, 3K-student subset):
+- Rule-only training: ROC-AUC 0.951; PR-AUC 0.892; F1 0.829; Recall 0.776.
+- GAN-augmented (default): ROC-AUC 0.950; PR-AUC 0.891; F1 0.819; Recall 0.776.
+- Difference is statistically indistinguishable. GAN retained for two non-metric reasons: distributional variation beyond fixed rule-template parameters, and protection against template overfitting since the test split is rule-based.
+
+Per-anomaly-family Transformer recall (Table 5):
+- answer_copying: n=116, recall 0.983, ROC-AUC vs normals 0.981.
+- partial_session: n=99, recall 0.970, ROC-AUC 0.975.
+- lookup_behavior: n=106, recall 0.934, ROC-AUC 0.972.
+- panic_compression: n=103, recall 0.796, ROC-AUC 0.931.
+- pre_known_answers: n=116, recall 0.793, ROC-AUC 0.939.
+Detector strongest on local-timing-signature families; weakest on whole-session compression families which look like fast-but-honest sessions.
+
+Cold-start (Table 6, Transformer bucketed by prior training sessions):
+- 1–2 prior sessions: n=196, ROC-AUC 0.954, F1 0.694, Recall 0.926.
+- 3–4 prior: n=396, ROC-AUC 0.960, F1 0.724, Recall 0.939.
+- >=5 prior: n=3,268, ROC-AUC 0.960, F1 0.786, Recall 0.888.
+ROC-AUC is essentially flat across buckets; lambda_u smoothly defers to population baseline for cold-start examinees.
+
+Top False Positives (Table 7): five highest-scoring false positives concentrated on a small number of students (e.g., u261015 appears twice, u261200 once); top false negatives dominated by panic_compression and pre_known_answers families.
+
+Fairness Calibration (Table 8, Transformer, before vs after per-group threshold calibration):
+- Gender: DPR before 0.978, after 1.000; EOD before 0.024, after 0.000.
+- Age Band: DPR before 0.963, after 1.000; EOD before 0.009, after 0.000.
+- IMD Band: DPR before 0.870, after 1.000; EOD before 0.094, after 0.000.
+- Disability: DPR before 0.887, after 1.000; EOD before 0.006, after 0.000.
+Targets: DPR >= 0.80, EOD <= 0.10. Note: this validates the calibration MECHANISM, not real demographic fairness, since demographics are synthetic.
+
+SHAP results: dt_log_mean, is_pause_mean, same_question_as_prev_mean, dt_since_prev_mean, answer_change_flag_mean are the top feature drivers — aligning with the perturbations applied by the synthetic anomaly generators.
+
+DISCUSSION AND LIMITATIONS
+The earlier draft used an LSTM autoencoder as the main detector but reconstruction error of 100x10 tensors proved insufficient; the authors switched to the supervised Transformer.
+
+GAN contribution: ablation showed no observable detection improvement over rule-only training, but GAN retained for robustness reasons that cannot be measured by metrics alone.
+
+Synthetic data limitation: all detection figures are on synthetic anomalies generated by templates the GAN was trained on. Real cheating exhibits behaviors not capturable by this generator. Fairness numbers represent calibration mechanism validation, not real demographic fairness.
+
+In-processing fairness via gradient reversal demographic discriminator was tested but degraded representation quality, so post-hoc alpha-calibration was preferred.
+
+Cold-start: new entrants reduce to population scoring; live system must mark these as low-confidence.
+
+Ground truth: no public dataset of labeled cheating clickstreams exists. Building one requires IRB-controlled experiments.
+
+Limitations Summary (Table 9):
+- Transformer separates synthetic anomalies from clean: STRONG evidence (Tab 2, bootstrap CIs); LIMITATION: synthetic-only, closed loop.
+- Personalised blending preserves cold-start performance: MODERATE (Tab 6); LIMITATION: "cold" means few synthetic sessions.
+- GAN augmentation contributes detection gain: NOT SUPPORTED on this evaluation (Tab 4); retained for robustness; needs cross-distribution test.
+- Fairness calibration removes group disparity: STRONG on this evaluation (Tab 8); LIMITATION: synthetic demographics.
+- SHAP recovers perturbed features: MODERATE (Fig 10); LIMITATION: KernelSHAP is feature-marginal, temporal structure not directly attributed.
+- System is fair and explainable on real exam data: NOT CLAIMED; no real-exam corpus available.
+
+CONCLUSION AND FUTURE SCOPE
+The framework achieves ROC-AUC 0.959 (95% CI [0.950, 0.968]), recall 0.894, perfect P@10. Calibration removes injected disparity to DPR=1.00 / EOD=0.00 across all four sensitive attributes. Future directions: validation on real exam data, scalable attribution (attention rollout, integrated gradients), temporal baseline evolution, multi-modal signals (typing rhythm, mouse motion, focus loss), federated learning, causal reasoning to distinguish cheating from stress/connectivity issues, and real-time detection with non-punitive soft prompts.
+
+Source code released at: https://github.com/f20230198-art/PERSONALIZED-BEHAVIORAL-DRIFT-DETECTION-FOR-FAIR-AND-EXPLAINABLE-ONLINE-EXAM-INTEGRITY

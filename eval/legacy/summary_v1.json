@@ -1,0 +1,33 @@
+{
+  "n": 19,
+  "note": "Completed 19/20 before hitting Groq daily TPD limit. Scores transcribed from run output.",
+  "single_pass": {
+    "faithfulness_avg": 4.63,
+    "completeness_avg": 3.63,
+    "correctness_avg": 4.53,
+    "latency_avg_s": 2.85,
+    "hallucination_rate": 0.053
+  },
+  "full_adversarial": {
+    "faithfulness_avg": 3.95,
+    "completeness_avg": 3.05,
+    "correctness_avg": 4.16,
+    "latency_avg_s": 14.5,
+    "hallucination_rate": 0.211
+  },
+  "delta": {
+    "faithfulness_pct": -14.7,
+    "completeness_pct": -16.0,
+    "correctness_pct": -8.2,
+    "hallucination_change_pct": "+298 (worse)",
+    "latency_overhead_x": 5.1
+  },
+  "per_question_scores": {
+    "single_pass_faith": [4,4,4,3,5,5,5,5,5,5,5,5,5,5,5,4,4,5,5],
+    "single_pass_comp": [5,5,2,2,5,5,5,5,5,5,5,1,1,1,1,2,4,5,5],
+    "single_pass_corr": [5,5,5,4,5,5,5,5,5,5,5,1,5,5,1,1,5,5,5],
+    "full_faith": [4,4,2,4,5,4,5,2,5,5,4,5,5,5,5,1,4,4,2],
+    "full_comp":  [5,5,1,4,5,5,5,1,5,5,5,1,1,1,1,1,2,5,1],
+    "full_corr":  [5,5,5,5,5,5,5,5,5,5,5,5,1,1,1,1,5,5,5]
+  }
+}

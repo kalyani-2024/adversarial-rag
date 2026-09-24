@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     # Reasoning models spend completion tokens "thinking"; keep it low for latency.
     llm_reasoning_effort: str | None = "low"
     llm_timeout_s: float = Field(30.0, gt=0)
-    llm_max_retries: int = Field(2, ge=0, description="SDK-level retries on 429/5xx/timeouts")
+    llm_max_retries: int = Field(3, ge=0, description="Retries on 429/5xx/timeouts/connection errors")
+    llm_max_wait_s: float = Field(45.0, ge=0, description="Cap on total retry wait per LLM call")
     generation_temperature: float = Field(0.1, ge=0, le=2)
     generation_max_tokens: int = Field(1200, gt=0)
 
