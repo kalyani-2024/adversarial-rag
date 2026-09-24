@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     llm_model: str = "openai/gpt-oss-120b"
     # Judge/critic use a different model family to reduce self-preference bias.
     judge_model: str | None = "qwen/qwen3.8-27b"
+    # Critic on a third model: spreads load across per-model rate-limit buckets
+    # (Groq free tier: 8k tokens/min per model) and adds another independent reviewer.
+    critic_model: str | None = "openai/gpt-oss-20b"
     # Reasoning models spend completion tokens "thinking"; keep it low for latency.
     llm_reasoning_effort: str | None = "low"
     llm_timeout_s: float = Field(30.0, gt=0)
@@ -73,6 +76,7 @@ class Settings(BaseSettings):
     faithfulness_threshold: float = Field(0.80, ge=0, le=1)
     relevance_threshold: float = Field(0.70, ge=0, le=1)
     completeness_threshold: float = Field(0.60, ge=0, le=1)
+    fail_on_unsupported_claims: bool = True
     max_retries: int = Field(2, ge=0, le=5)
 
     # --- Observability / service -------------------------------------------
@@ -94,6 +98,10 @@ class Settings(BaseSettings):
     @property
     def effective_judge_model(self) -> str:
         return self.judge_model or self.llm_model
+
+    @property
+    def effective_critic_model(self) -> str:
+        return self.critic_model or self.effective_judge_model
 
     @property
     def index_dir(self) -> Path:

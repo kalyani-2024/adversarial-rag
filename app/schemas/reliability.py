@@ -26,6 +26,11 @@ class JudgeResult(JudgeScores):
     failed_checks: list[str] = Field(default_factory=list)
 
     @property
+    def grounded(self) -> bool:
+        """No faithfulness-type failure (faithfulness is a hard constraint; relevance/completeness are soft)."""
+        return not {"faithfulness", "unsupported_claims"} & set(self.failed_checks)
+
+    @property
     def aggregate(self) -> float:
         """Single number used to pick the best attempt (faithfulness-weighted)."""
         return 0.5 * self.faithfulness + 0.25 * self.relevance + 0.25 * self.completeness
@@ -53,3 +58,6 @@ class Thresholds(BaseModel):
     faithfulness: float = Field(ge=0, le=1)
     relevance: float = Field(ge=0, le=1)
     completeness: float = Field(ge=0, le=1)
+    # LLM judges often list unsupported claims yet still score faithfulness ~0.95
+    # (observed with qwen3.8-27b). Treat any listed claim as a failure.
+    fail_on_unsupported_claims: bool = True

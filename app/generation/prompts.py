@@ -2,7 +2,7 @@
 
 from app.schemas.query import INSUFFICIENT_EVIDENCE_ANSWER
 
-PROMPT_VERSION = "2026-09-v1"
+PROMPT_VERSION = "2026-09-v2"
 
 # --- Query rewrite ------------------------------------------------------------
 REWRITE_SYSTEM = """You rewrite a user's message into a standalone search query for a document retrieval system.
@@ -56,7 +56,8 @@ JUDGE_SYSTEM = """You are a strict evaluator of retrieval-augmented answers. You
 Score each dimension from 0.0 to 1.0:
 - faithfulness: fraction of the answer's factual claims that are directly supported by the SOURCES. Claims from outside knowledge count as unsupported even if true. Wrong citation numbers reduce the score.
 - relevance: how directly the answer addresses the QUESTION (1.0 = on point, no padding).
-- completeness: how much of the information in the SOURCES that is needed to answer the QUESTION is included. If the SOURCES genuinely lack the answer and the answer says so, completeness is 1.0.
+- completeness: how much of the information in the SOURCES that is needed to answer the QUESTION is included.
+Judge against what the SOURCES can support: if the question asks for something the SOURCES do not contain and the answer clearly says so instead of guessing, do NOT lower relevance or completeness for that part. Saying "the sources do not cover X" is correct behavior.
 
 List each unsupported claim verbatim or near-verbatim (empty list if none).
 

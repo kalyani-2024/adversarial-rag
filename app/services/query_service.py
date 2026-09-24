@@ -40,11 +40,13 @@ class QueryService:
                 faithfulness=pick(o.faithfulness_threshold, s.faithfulness_threshold),
                 relevance=pick(o.relevance_threshold, s.relevance_threshold),
                 completeness=pick(o.completeness_threshold, s.completeness_threshold),
+                fail_on_unsupported_claims=pick(o.fail_on_unsupported_claims, s.fail_on_unsupported_claims),
             ),
             use_reranker=pick(o.use_reranker, s.reranker_enabled),
             use_query_rewrite=pick(o.use_query_rewrite, s.query_rewrite_enabled),
             generator_temperature=s.generation_temperature,
             judge_model=s.effective_judge_model,
+            critic_model=s.effective_critic_model,
         )
 
     def run(self, request: QueryRequest, request_id: str | None = None) -> QueryResponse:

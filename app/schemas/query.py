@@ -31,6 +31,7 @@ class QueryOptions(BaseModel):
     faithfulness_threshold: float | None = Field(None, ge=0, le=1)
     relevance_threshold: float | None = Field(None, ge=0, le=1)
     completeness_threshold: float | None = Field(None, ge=0, le=1)
+    fail_on_unsupported_claims: bool | None = None
     use_reranker: bool | None = None
     use_query_rewrite: bool | None = None
 

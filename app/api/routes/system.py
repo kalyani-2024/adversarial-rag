@@ -21,6 +21,7 @@ class HealthResponse(BaseModel):
     llm_configured: bool
     llm_model: str
     judge_model: str
+    critic_model: str
     reranker_enabled: bool
 
 
@@ -40,6 +41,7 @@ def health(container: Container = Depends(get_container)):
         llm_configured=bool(key and key.get_secret_value().strip()),
         llm_model=s.llm_model,
         judge_model=s.effective_judge_model,
+        critic_model=s.effective_critic_model,
         reranker_enabled=s.reranker_enabled,
     )
 

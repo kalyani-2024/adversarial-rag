@@ -21,6 +21,8 @@ def apply_thresholds(scores: JudgeScores, thresholds: Thresholds) -> JudgeResult
         for name in ("faithfulness", "relevance", "completeness")
         if getattr(scores, name) < getattr(thresholds, name)
     ]
+    if thresholds.fail_on_unsupported_claims and scores.unsupported_claims:
+        failed.append("unsupported_claims")
     return JudgeResult(**scores.model_dump(), verdict="FAIL" if failed else "PASS", failed_checks=failed)
 
 

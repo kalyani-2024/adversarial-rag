@@ -51,6 +51,13 @@ def test_threshold_logic():
     assert failed.verdict == "FAIL" and failed.failed_checks == ["faithfulness", "relevance"]
 
 
+def test_unsupported_claims_fail_even_with_high_score():
+    scores = JudgeScores(faithfulness=0.95, relevance=0.9, completeness=0.9, unsupported_claims=["made up"])
+    assert apply_thresholds(scores, T).failed_checks == ["unsupported_claims"]
+    lenient = T.model_copy(update={"fail_on_unsupported_claims": False})
+    assert apply_thresholds(scores, lenient).verdict == "PASS"
+
+
 def _state(verdict_scores: list[float], retries: int, max_retries: int, judge_error=None):
     attempts = [Attempt(attempt=i, answer=f"a{i}", judge=apply_thresholds(JudgeScores(faithfulness=f, relevance=0.9, completeness=0.9), T))
                 for i, f in enumerate(verdict_scores)]
@@ -65,6 +72,16 @@ def test_route_after_judge():
     assert route_after_judge(_state([0.2, 0.3, 0.4], 2, 2)) == "finalize"  # budget exhausted
     assert route_after_judge(_state([0.2], 0, 0)) == "finalize"    # retries disabled
     assert route_after_judge(_state([0.2], 0, 2, judge_error="boom")) == "finalize"
+
+
+def test_grounded_attempt_beats_higher_scoring_hallucination():
+    hallucinated = Attempt(attempt=0, answer="fluent but invented", judge=apply_thresholds(
+        JudgeScores(faithfulness=0.95, relevance=1.0, completeness=1.0, unsupported_claims=["invented"]), T))
+    honest = Attempt(attempt=1, answer="sources do not cover X", judge=apply_thresholds(
+        JudgeScores(faithfulness=1.0, relevance=0.5, completeness=0.5), T))
+    assert hallucinated.judge.verdict == honest.judge.verdict == "FAIL"
+    assert hallucinated.judge.aggregate > honest.judge.aggregate
+    assert select_best_attempt([hallucinated, honest]) == 1
 
 
 def test_select_best_attempt_prefers_pass_then_score_then_earliest():

@@ -53,6 +53,7 @@ class RunConfig:
     use_query_rewrite: bool
     generator_temperature: float
     judge_model: str
+    critic_model: str = ""
 
 
 class PipelineState(TypedDict, total=False):
@@ -107,16 +108,21 @@ def route_after_judge(state: PipelineState) -> str:
 
 
 def select_best_attempt(attempts: list[Attempt]) -> int:
-    """Prefer PASS, then higher aggregate score; ties go to the earliest attempt.
+    """Rank by PASS, then grounded (no faithfulness failure), then aggregate score; ties -> earliest.
 
     Returning the *best* rather than the *latest* attempt means a retry can
     never make the final answer worse than the initial one, which is the
-    failure mode of an always-on rewrite step.
+    failure mode of an always-on rewrite step. Grounding outranks the
+    aggregate score so that a fluent-but-hallucinated answer never beats an
+    honest "the sources don't cover X" answer that scores lower on relevance.
     """
     judged = [a for a in attempts if a.judge is not None]
     if not judged:
         return len(attempts) - 1
-    best = max(judged, key=lambda a: (a.judge.verdict == "PASS", round(a.judge.aggregate, 4), -a.attempt))
+    best = max(
+        judged,
+        key=lambda a: (a.judge.verdict == "PASS", a.judge.grounded, round(a.judge.aggregate, 4), -a.attempt),
+    )
     return best.attempt
 
 
@@ -204,7 +210,7 @@ def build_graph(llm: LLMClient, retriever: HybridRetriever):
         current = attempts[-1]
         with trace.span("critic", attempt=current.attempt) as span:
             critique, resp, error = critique_answer(
-                llm, state["retrieval_query"], state["retrieval"].chunks, current.answer, current.judge, model=run.judge_model
+                llm, state["retrieval_query"], state["retrieval"].chunks, current.answer, current.judge, model=run.critic_model or run.judge_model
             )
             trace.record_llm(resp, "critic")
             if error:
