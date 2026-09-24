@@ -1,14 +1,22 @@
-langchain>=0.3.0
-langgraph>=0.2.0
-langchain-groq>=0.2.0
-langchain-community>=0.3.0
-sentence-transformers>=3.0.0
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
+# Runtime dependencies (versions verified together on Python 3.12).
+# API
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
 python-multipart>=0.0.9
-streamlit>=1.38.0
-requests>=2.32.0
-python-dotenv>=1.0.0
-pydantic>=2.0.0
-PyPDF2>=3.0.0
-python-docx>=1.0.0
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+python-dotenv>=1.0
+# Orchestration + LLM
+langgraph>=0.2
+groq>=0.11
+# Retrieval
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+rank-bm25>=0.2.2
+numpy>=1.26
+# Parsing
+pypdf>=4.0
+python-docx>=1.1
+# UI
+streamlit>=1.38
+requests>=2.32

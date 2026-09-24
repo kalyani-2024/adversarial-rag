@@ -1,19 +1,27 @@
 # Virtual environments
 venv/
 env/
+.venv/
+
+# Secrets
 .env
 
 # Cache
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 # IDEs
 .vscode/
 .idea/
 
-# Data and Indices
+# Data and indices (runtime state; mount a volume in production)
+data/
 faiss_index/
+
+# Eval artifacts that contain raw model output
+eval/results/*.jsonl
 
 # OS generated files
 .DS_Store
