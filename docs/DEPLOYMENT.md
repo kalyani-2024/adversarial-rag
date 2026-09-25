@@ -36,7 +36,40 @@ docker compose up --build
 
 Two containers from one image (`APP_ROLE=api` / `APP_ROLE=ui`), a named volume `rag-data` for `/data`, the UI waits for the API health check. Streamlit's upload limit is set to 100 MB in `.streamlit/config.toml`.
 
-## Option B: Hugging Face Spaces (free CPU tier), recommended for a public demo
+## Option S: Streamlit Community Cloud (free), recommended for a public demo
+
+Streamlit Community Cloud runs one Streamlit process per app, so the app uses **embedded mode**: with `RAG_BACKEND=embedded` the UI calls the same services (`DocumentService`, `QueryService`, LangGraph pipeline, background ingestion, streaming events, logging) in-process instead of over HTTP (`ui/embedded.py`). The backend is created once per server process (`st.cache_resource`) and shared by all visitors. Local development and Docker are unchanged and still use the FastAPI server.
+
+**Steps**
+
+1. **Push the code to GitHub** (Community Cloud deploys from a GitHub repository; the branch can be `feature/reliability-platform` or `master` after merging). `.env` and `data/` are git-ignored, so no secrets or indexes are pushed. Note that the repository includes the sample paper in `eval/corpus/`.
+2. Go to **share.streamlit.io** → sign in with GitHub → **Create app** → *Deploy a public app from GitHub*:
+   - Repository: `kalyani-2024/adversarial-rag`, branch: the one you pushed
+   - Main file path: **`ui/streamlit_app.py`**
+   - *Advanced settings* → Python **3.12**
+3. In *Advanced settings → Secrets*, paste (TOML):
+   ```toml
+   RAG_BACKEND = "embedded"
+   GROQ_API_KEY = "gsk_..."
+   APP_PASSWORD = "choose-a-password"
+   ```
+   Any other setting from `.env.example` can be added the same way (e.g. `MAX_UPLOAD_MB = "50"`).
+4. Deploy. The first build installs dependencies from **`ui/requirements.txt`** (Community Cloud reads the requirements file next to the entrypoint before the root one). That file pins CPU-only PyTorch; the default Linux wheel would pull ~2 GB of unused CUDA libraries. The first visit then downloads the two small models (~110 MB) and indexes the sample paper automatically (`eval/corpus`), which takes around a minute.
+5. Open the app URL, enter the password, ask a question. Share the URL and password with interviewers.
+
+**Caveats**
+
+- **Memory.** Everything (Streamlit, PyTorch, both models, FAISS, the LLM pipeline) runs in one process. Measured locally, the API alone used ~620–710 MiB under Docker. Community Cloud's per-app memory limit is not under this repo's control, so check it. If the app is killed while indexing a big upload, use smaller files or lower `MAX_UPLOAD_MB`.
+- **Ephemeral storage and sleep.** Apps sleep after inactivity, and the filesystem resets on restart or redeploy: uploads disappear, and an upload being indexed is lost. The sample paper is re-indexed on every start.
+- **Shared state.** All visitors share one backend and one document collection (it's a demo, not multi-tenant). Anyone with the password can upload or delete documents.
+- **CPU.** Indexing and reranking run on shared CPU; expect them to be slower than on a laptop.
+- **Logs.** The structured JSON logs appear in the app's *Manage app → Logs* panel.
+
+**Status:** embedded mode was tested locally in the configuration Community Cloud uses: no API server, fresh data directory, password on. The sample paper was auto-indexed, and a streamed answer with citations came back from the in-process pipeline (plus unit tests in `tests/test_embedded.py`). The build from `ui/requirements.txt` on Community Cloud itself, and the deployment, have not been done yet; they have to be done from your GitHub and Streamlit accounts.
+
+## Option B: Hugging Face Spaces (Docker)
+
+> On the author's account (September 2026), Docker Spaces were offered only as a paid option and the free tier allowed only *Static* Spaces, which cannot run this Python backend. Check the current Hugging Face offering; with a paid CPU Space the steps below apply unchanged.
 
 Why: the free CPU Space has enough RAM for PyTorch plus both models, runs any Dockerfile, and exposes one port, which `APP_ROLE=all` serves (API on 127.0.0.1:8000, Streamlit on the public `$PORT`). Because the UI calls the API inside the container, streaming and uploads don't pass through an extra proxy hop between them.
 
@@ -86,7 +119,7 @@ Caveats:
 
 `render.yaml` defines an API service with a 1 GB persistent disk and a UI service. **The free Render instance (512 MB, no disk) is not viable**: the API measured ~650–710 MiB, so it would run out of memory, and uploads would be lost. Use a plan with at least 1–2 GB for the API. Set `GROQ_API_KEY` and the UI's `API_BASE_URL` in the dashboard. Also check Render's request-size and response-buffering behaviour for 100 MB uploads and SSE.
 
-## Option D: Split UI (Streamlit Community Cloud) + API elsewhere
+## Option D: Streamlit Community Cloud UI + API hosted elsewhere
 
 The UI only needs `streamlit` and `requests` and talks to the API over HTTP (JSON + SSE). Deploy `app.py` on Streamlit Community Cloud with the secret `API_BASE_URL` pointing at a hosted API. Enable CORS on the API (`CORS_ORIGINS='["https://your-app.streamlit.app"]'`). Uploads then travel UI → API over the internet, so both sides need the 100 MB limit.
 

@@ -10,7 +10,7 @@ How to explain this project in a technical interview: what to say, what to show,
 >
 > The design came from a measurement. My first version always ran a critique-and-rewrite step, and my own eval showed it made answers *less* faithful at 5× the latency. So v2 makes the loop conditional, puts the PASS/FAIL decision in code instead of the LLM, and I evaluate baseline against adversarial on a golden dataset with an independent evaluator model. The honest result: with a strong generator, most answers already pass, so the loop rarely fires and doesn't measurably change quality on my test sets. What it buys is a calibrated per-answer verification signal; the judge caught 6 of 6 seeded faults.
 >
-> On the engineering side, it takes 100 MB uploads, indexed in the background with progress while chat keeps priority. BM25 is a segmented inverted index, 1 ms at 100k chunks. Everything is traced and logged per request. It's FastAPI + LangGraph + Streamlit, with 127 tests and a Docker image."
+> On the engineering side, it takes 100 MB uploads, indexed in the background with progress while chat keeps priority. BM25 is a segmented inverted index, 1 ms at 100k chunks. Everything is traced and logged per request. It's FastAPI + LangGraph + Streamlit, with 130 tests and a Docker image."
 
 ## 2. The 5-minute architecture walkthrough
 
@@ -183,6 +183,9 @@ Per request: the query (optional), retrieval scores per chunk, each attempt's ve
 
 **19. What was the hardest bug?**
 There are two good stories. First: BM25 returned nothing on a one-document corpus because the library's IDF goes negative; I found it with a unit test and reimplemented it with Lucene's IDF. Second: the judge listed unsupported claims but still scored faithfulness 0.95, so hallucinated answers passed. Worse, when every attempt failed, best-attempt selection preferred the fluent hallucination over the honest answer. The fixes: any unsupported claim fails the verdict, and grounding became a hard ranking key.
+
+**20. How is it deployed?**
+Two modes over the same code. The full architecture (FastAPI with SSE plus a separate Streamlit UI) runs anywhere Docker runs; one image serves both roles, or both in one container. The free public demo runs on Streamlit Community Cloud, which allows a single process, so the UI has an *embedded* backend: the same services and pipeline called in-process instead of over HTTP, selected by `RAG_BACKEND=embedded`. Because routes are thin and all logic lives in services, the embedded client is ~100 lines. The trade-off: a single shared process, ephemeral storage, and a memory limit I don't control.
 
 ## 9. Scaling discussion (short form)
 

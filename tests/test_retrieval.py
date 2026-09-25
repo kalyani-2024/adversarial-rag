@@ -212,12 +212,18 @@ def test_bm25_segments_match_single_index_and_scale():
         incremental.add_document(d, [c for c in chunks if c.document_id == d])
 
     q = "w1 w42 w999 w4000"
-    start = time.perf_counter()
     hits = incremental.search(q, k=20)
-    elapsed = time.perf_counter() - start
     assert hits == whole.search(q, k=20)
     assert len(hits) == 20 and hits == sorted(hits, key=lambda h: -h[1])
-    assert elapsed < 0.25, f"BM25 query took {elapsed:.3f}s on 50k chunks"
+    # Median of several runs, generous bound: catches a regression to scanning every chunk
+    # (seconds) without flaking on a busy machine (typically ~1 ms).
+    timings = []
+    for _ in range(5):
+        start = time.perf_counter()
+        incremental.search(q, k=20)
+        timings.append(time.perf_counter() - start)
+    median = sorted(timings)[2]
+    assert median < 0.5, f"BM25 query median {median:.3f}s on 50k chunks"
 
 
 def test_bm25_remove_document_restores_statistics():

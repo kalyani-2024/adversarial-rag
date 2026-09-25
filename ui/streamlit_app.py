@@ -27,23 +27,33 @@ from client import APIError, RagClient  # noqa: E402
 st.set_page_config(page_title="RAG Reliability Lab", page_icon="🧪", layout="centered")
 
 
-def _api_base_url() -> str:
-    if os.getenv("API_BASE_URL"):
-        return os.environ["API_BASE_URL"]
+def _setting(name: str, default: str = "") -> str:
+    """Environment variable first, then Streamlit secrets (how Streamlit Community Cloud passes config)."""
+    if os.getenv(name):
+        return os.environ[name]
     try:
-        return st.secrets["API_BASE_URL"]
+        return str(st.secrets[name])
     except Exception:
-        return "http://localhost:8000"
+        return default
+
+
+def _make_client():
+    """RAG_BACKEND=http (default): call the FastAPI server. embedded: run the pipeline in this process."""
+    if _setting("RAG_BACKEND", "http").lower() == "embedded":
+        from embedded import EmbeddedClient
+
+        return EmbeddedClient()
+    return RagClient(_setting("API_BASE_URL", "http://localhost:8000"))
 
 
 def _require_password() -> None:
     """Optional shared password (APP_PASSWORD) for public deployments.
 
-    On a Hugging Face Space only this UI is public (the API listens on
-    127.0.0.1 inside the container), so gating the UI protects the LLM quota.
+    On a public deployment only this UI is exposed (in APP_ROLE=all the API listens on
+    127.0.0.1; in embedded mode there is no API), so gating the UI protects the LLM quota.
     Unset APP_PASSWORD = no gate (local development).
     """
-    expected = os.getenv("APP_PASSWORD", "")
+    expected = _setting("APP_PASSWORD")
     if not expected or st.session_state.get("authenticated"):
         return
     st.markdown("<div class='empty-state'><h1>RAG Reliability Lab</h1><p>This demo is password-protected.</p></div>",
@@ -58,8 +68,6 @@ def _require_password() -> None:
         st.error("Incorrect password.")
     st.stop()
 
-
-client = RagClient(_api_base_url())
 
 MIME = {"pdf": "application/pdf", "txt": "text/plain", "md": "text/markdown", "markdown": "text/markdown",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
@@ -243,6 +251,7 @@ def documents_panel(initial: list[dict], error: str | None) -> None:
 
 
 _require_password()
+client = _make_client()
 
 with st.sidebar:
     if st.button("＋ New chat", use_container_width=True):

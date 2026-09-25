@@ -67,9 +67,9 @@ app/
   storage/        SQLite document store (status, error, chunks)
   observability/  tracing (OTel-shaped spans), JSON logging, per-query log records, metrics
   evaluation/     golden dataset, metrics, harness, judge calibration, report
-ui/               Streamlit chat UI: streaming answers, inline hover citations, settings sidebar
+ui/               Streamlit chat UI (streaming, hover citations, settings, password gate); HTTP or embedded backend
 eval/             golden.jsonl, stress.jsonl, corpus, run_eval.py, results/, legacy v1
-tests/            127 pytest tests (no network, scripted LLM)
+tests/            130 pytest tests (no network, scripted LLM)
 docs/             ARCHITECTURE.md, INTERVIEW_GUIDE.md, DEPLOYMENT.md
 ```
 
@@ -266,10 +266,12 @@ cp .env.example .env                               # set GROQ_API_KEY (console.g
 uvicorn api:app --port 8000                        # API  → http://127.0.0.1:8000/docs
 streamlit run app.py                               # UI   → http://localhost:8501
 
-pytest                                             # 127 tests, no network needed
+pytest                                             # 130 tests, no network needed
 python -m eval.run_eval --retrieval-only           # retrieval ablation, no LLM calls
 python -m eval.run_eval --publish                  # full evaluation (uses your Groq quota)
 ```
+
+To run the UI without the API server (as on Streamlit Cloud): `RAG_BACKEND=embedded streamlit run ui/streamlit_app.py`.
 
 Start the API first and wait for `Application startup complete` (model warm-up takes ~10–30 s). The first start downloads two small models (~110 MB) from the Hugging Face Hub. Set `SEED_DIR=./eval/corpus` to have the sample paper indexed automatically at startup.
 
@@ -291,9 +293,10 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Summary:
 
 - **The API is stateful on disk** (`DATA_DIR`: SQLite + FAISS). The FAISS index is rebuilt from SQLite automatically, and `SEED_DIR` re-ingests a demo corpus at startup, but user uploads need a persistent volume.
 - **Uploads up to 100 MB** need matching limits in front of the API (reverse-proxy body size, platform request limits). Streaming needs proxies that don't buffer (`X-Accel-Buffering: no` is sent).
-- **Recommended free demo:** Hugging Face Spaces (Docker, CPU basic), with `APP_ROLE=all` running the API and UI in one container on one port.
+- **Recommended free demo:** Streamlit Community Cloud in **embedded mode** (`RAG_BACKEND=embedded`): the Streamlit app runs the pipeline in-process, entrypoint `ui/streamlit_app.py`, dependencies from `ui/requirements.txt` (CPU-only PyTorch), secrets `GROQ_API_KEY` and `APP_PASSWORD`.
+- **Docker hosts** (a VM with `docker compose`, a paid Hugging Face Docker Space with `APP_ROLE=all`, Render) run the full API + UI architecture. On the author's account, Docker Spaces were paid-only.
 - **Render free tier is not viable** (512 MB RAM, no persistent disk); `render.yaml` targets a 1–2 GB plan with a disk.
-- Tested: local `docker compose` and the single-container `APP_ROLE=all` mode. **Not tested:** an actual Spaces or Render deployment.
+- Tested locally: `docker compose`, the single-container `APP_ROLE=all` mode, and embedded mode as Streamlit Cloud runs it. **Not yet done:** an actual Streamlit Cloud, Spaces or Render deployment.
 
 ## 17. Limitations
 

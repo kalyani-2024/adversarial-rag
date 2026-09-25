@@ -1,0 +1,18 @@
+# Dependencies for Streamlit Community Cloud (entrypoint: ui/streamlit_app.py, RAG_BACKEND=embedded).
+# Community Cloud reads the requirements file next to the entrypoint before the root one.
+# CPU-only PyTorch: the default Linux wheel pulls ~2 GB of CUDA libraries the app never uses.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+# Pipeline (runs in-process; FastAPI/uvicorn are not needed in embedded mode)
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+langgraph>=0.2
+groq>=0.11
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+numpy>=1.26
+pypdf>=4.0
+python-docx>=1.1
+# UI
+streamlit>=1.38
+requests>=2.32
