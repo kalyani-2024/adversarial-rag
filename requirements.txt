@@ -15,6 +15,7 @@ faiss-cpu>=1.8
 numpy>=1.26
 # Parsing
 pypdf>=4.0
+pdfminer.six>=20231228   # primary PDF text extractor (keeps word spacing); pypdf is the fallback
 python-docx>=1.1
 # UI
 streamlit>=1.38

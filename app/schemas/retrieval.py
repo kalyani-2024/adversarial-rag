@@ -12,6 +12,7 @@ class RetrievedChunk(BaseModel):
     chunk_index: int
     page: int | None = None
     text: str
+    context: str = Field("", description="Index-time description of the chunk (e.g. 'first page: title, authors…')")
 
     dense_score: float | None = Field(None, description="Cosine similarity (normalized embeddings)")
     dense_rank: int | None = None
@@ -21,6 +22,10 @@ class RetrievedChunk(BaseModel):
     fusion_rank: int | None = None
     rerank_score: float | None = Field(None, description="Cross-encoder relevance logit")
     final_rank: int | None = None
+
+    @property
+    def index_text(self) -> str:
+        return f"{self.context}\n{self.text}" if self.context else self.text
 
 
 class RetrievalResult(BaseModel):

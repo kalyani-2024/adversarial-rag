@@ -77,6 +77,28 @@ Dense embeddings capture paraphrase ("how many learners" ≈ "students sampled")
 
 **Fusion: Reciprocal Rank Fusion.** `score(d) = Σ 1/(k + rank_r(d))`, k = 60. Cosine similarity and BM25 scores live on incompatible scales (BM25 is unbounded and corpus-dependent), so a weighted *score* sum needs per-query normalization and tuned weights; RRF uses only ranks, has one robust parameter, and rewards agreement between retrievers. Alternatives: convex combination with min-max normalization (needs tuning data), learned fusion (needs labels at scale).
 
+### 3.2a Document-level questions: index-time context (and better PDF text)
+
+**The failure.** A user uploaded a research paper and asked "who are the authors?". The system refused: "not enough evidence". Tracing the stages showed storage was consistent (102 chunks = 102 vectors = 102 BM25 entries) and generation never ran; retrieval was the problem. The title page contains names, affiliations and e-mail addresses, but not the word "author". BM25 had zero matching terms, the bi-encoder similarity was 0.15, and the cross-encoder scored the title page −11.3, so the evidence gate (−5) correctly refused given what retrieval found. The same held for "what is the title?" and "which university?".
+
+**Why it happens.** Chunk retrieval matches the question against the chunk's *own words*. Questions about the document itself (authors, title, affiliation, date, "what is this about") ask for a *role* the text plays, which the text never states.
+
+**The fix: describe what the chunk is.** The first two chunks of a document's first page get a deterministic context sentence (`app/ingestion/context.py`): "First page of the document X. It gives the title…, the authors who wrote it, their affiliations (university, company or organization)…, and the abstract or summary…". It is stored in its own column and:
+
+- prepended for **indexing** only (embedding, BM25, reranking), via `index_text`;
+- shown to the **LLM** as "(Note about this passage: …)", so it can read a list of names as the authors;
+- never part of the **cited passage**, which stays verbatim.
+
+Wording was chosen by measurement: a filename-only header did nothing (−11.2); a short "title page: title, authors, affiliations" helped partly (−6.4); the descriptive sentence moved the title page to −3.5 / −0.7 / +0.2 for the authors / who-wrote / title questions, and left an unrelated question at −11.5.
+
+**Result.** All five document-level test questions went from refused to correctly answered with a page-1 citation (end to end with the real models), off-topic questions are still refused with zero LLM calls, and the golden-set retrieval metrics are unchanged.
+
+**Alternatives considered.** (1) An LLM-written context per chunk ("contextual retrieval") or an LLM-extracted metadata record per document: more general, but costs LLM calls at ingestion (rate-limited on the free tier) and adds generated text to the evidence. (2) Loosening the evidence gate: would let the generator see junk for genuinely unanswerable questions. (3) Query expansion / HyDE: an LLM call per query, and it still cannot make "authors" match a list of names. The deterministic context is free, reproducible and testable; the LLM-based variants are the natural next step for richer document types.
+
+**Upgrading existing indexes.** The store records an `index_version`. On startup an older store gets the context back-filled (it is deterministic) and all vectors re-embedded; new stores are stamped at creation, so nothing is rebuilt needlessly.
+
+**PDF extraction.** The same investigation showed pypdf gluing words in this two-column PDF ("ROC-AUC0.959", "realEdNetclickstreams"), which corrupts BM25 tokens. `pdfminer.six` (MIT, pure Python) keeps the spaces at similar speed and is now the primary extractor; pypdf validates the file and is the fallback (pdfminer missing, failing, or disagreeing on the page count). pypdf's own "layout" mode was tested and was worse (it interleaves columns and splits numbers).
+
 ### 3.2 BM25: own implementation, inverted index, per-document segments
 
 - **IDF.** We use Lucene's IDF `ln(1 + (N − n + 0.5)/(n + 0.5))`. The common `rank_bm25` Okapi IDF `ln((N − n + 0.5)/(n + 0.5))` is ≤ 0 whenever a term appears in half the chunks, which made BM25 return *nothing* on small corpora. A unit test caught this (`test_bm25_works_on_tiny_corpus`).
@@ -176,6 +198,7 @@ Rendering safety: model output is HTML-escaped before badges are inserted; Markd
 | Irrelevant question | evidence gate → fixed abstention sentence, 0 LLM calls |
 | Generator abstains | detected by exact-sentence match; `status: insufficient_evidence` |
 | Unsupported type / too large / duplicate | immediate 415 / 413 / 409 (with the existing `document_id`) |
+| Document-level question (authors, title, affiliation) | front-matter context makes the title page retrievable; answered with a page-1 citation |
 | Unparseable or text-less file | background: `status=failed` + error, retryable by re-upload; `?wait=true`: 422 |
 | Upload interrupted by restart | marked `failed` on startup |
 | Document deleted while indexing | worker cancels at the next batch; nothing left behind |

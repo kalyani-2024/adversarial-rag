@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
 """
 
 _CHUNK_SELECT = """
-SELECT c.id, c.document_id, d.filename, c.chunk_index, c.page, c.text
+SELECT c.id, c.document_id, d.filename, c.chunk_index, c.page, c.text, c.context
 FROM chunks c JOIN documents d ON d.id = c.document_id
 """
 
@@ -51,6 +51,7 @@ def _row_to_chunk(row: sqlite3.Row) -> ChunkRecord:
         chunk_index=row[3],
         page=row[4],
         text=row[5],
+        context=row[6] or "",
     )
 
 
@@ -73,6 +74,10 @@ class DocumentStore:
                 self._conn.execute("ALTER TABLE documents ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'")
             if "error" not in cols:
                 self._conn.execute("ALTER TABLE documents ADD COLUMN error TEXT")
+            chunk_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(chunks)")}
+            if "context" not in chunk_cols:
+                self._conn.execute("ALTER TABLE chunks ADD COLUMN context TEXT")
+            self._conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
 
     # --- writes ----------------------------------------------------------------
     def create_document(
@@ -99,11 +104,26 @@ class DocumentStore:
         """Insert all chunks of a document in one transaction; returns them with ids."""
         with self._lock, self._conn:
             self._conn.executemany(
-                "INSERT INTO chunks (document_id, chunk_index, page, text) VALUES (?, ?, ?, ?)",
-                [(document_id, c.chunk_index, c.page, c.text) for c in chunks],
+                "INSERT INTO chunks (document_id, chunk_index, page, text, context) VALUES (?, ?, ?, ?, ?)",
+                [(document_id, c.chunk_index, c.page, c.text, c.context or None) for c in chunks],
             )
             self._conn.execute("UPDATE documents SET num_pages = ? WHERE id = ?", (num_pages, document_id))
         return self.get_document_chunks(document_id)
+
+    def get_meta(self, key: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
+                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+    def set_chunk_contexts(self, contexts: list[tuple[str | None, int]]) -> None:
+        """Bulk-update `(context, chunk_id)` pairs (index upgrades)."""
+        with self._lock, self._conn:
+            self._conn.executemany("UPDATE chunks SET context = ? WHERE id = ?", contexts)
 
     def set_status(self, document_id: str, status: str, error: str | None = None) -> None:
         with self._lock, self._conn:

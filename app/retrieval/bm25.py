@@ -65,7 +65,7 @@ class _Segment:
         lists: dict[str, tuple[list[int], list[int]]] = defaultdict(lambda: ([], []))
         lengths = []
         for pos, chunk in enumerate(chunks):
-            tokens = tokenize(chunk.text)
+            tokens = tokenize(chunk.index_text)
             lengths.append(len(tokens))
             for term, tf in Counter(tokens).items():
                 docs, tfs = lists[term]

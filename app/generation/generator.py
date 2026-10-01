@@ -29,7 +29,13 @@ def source_label(chunk: RetrievedChunk) -> str:
 
 
 def format_context(chunks: list[RetrievedChunk]) -> str:
-    return "\n\n".join(f"[{i}] ({source_label(c)})\n{c.text}" for i, c in enumerate(chunks, start=1))
+    """Numbered sources for the prompt. A chunk's index-time context is included as a note so the
+    model can interpret the passage (e.g. that names on a title page are the authors)."""
+    blocks = []
+    for i, c in enumerate(chunks, start=1):
+        note = f"\n(Note about this passage: {c.context})" if c.context else ""
+        blocks.append(f"[{i}] ({source_label(c)}){note}\n{c.text}")
+    return "\n\n".join(blocks)
 
 
 def is_abstention(answer: str) -> bool:

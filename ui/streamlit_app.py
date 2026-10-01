@@ -126,6 +126,14 @@ st.markdown(
     section[data-testid="stSidebar"] .stButton button { min-height: 32px; border-radius: 6px; font-size: 13px; font-weight: 500; }
     section[data-testid="stSidebar"] .stButton button[kind="secondary"] { border: 1px solid #E4E4E7; background: #FFFFFF; color: #0A0A0A; }
     section[data-testid="stSidebar"] .stButton button[kind="tertiary"] { color: #52525B; }
+    /* Button labels are a <p> inside the <button>. The paragraph colours set for the sidebar and
+       the answer text must never apply to them (dark grey on a black primary button is unreadable). */
+    .stApp button p, .stApp button span, .stApp button div { color: inherit !important; }
+    .stApp button[kind="primary"], .stApp button[kind="primaryFormSubmit"] {
+        background: #0A0A0A; border-color: #0A0A0A; color: #FFFFFF !important; }
+    .stApp button[kind="primary"]:hover, .stApp button[kind="primaryFormSubmit"]:hover {
+        background: #27272A; border-color: #27272A; color: #FFFFFF !important; }
+    .stApp button[kind="secondary"], .stApp button[kind="secondaryFormSubmit"] { color: #0A0A0A; }
     section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
         background: #FFFFFF; border: 1px solid #E4E4E7; border-radius: 6px; padding: 8px; }
 

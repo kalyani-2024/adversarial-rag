@@ -69,7 +69,7 @@ app/
   evaluation/     golden dataset, metrics, harness, judge calibration, report
 ui/               Streamlit chat UI (streaming, hover citations, settings, password gate); HTTP or embedded backend
 eval/             golden.jsonl, stress.jsonl, corpus, run_eval.py, results/, legacy v1
-tests/            130 pytest tests (no network, scripted LLM)
+tests/            137 pytest tests (no network, scripted LLM)
 docs/             ARCHITECTURE.md, INTERVIEW_GUIDE.md, DEPLOYMENT.md
 ```
 
@@ -77,6 +77,8 @@ docs/             ARCHITECTURE.md, INTERVIEW_GUIDE.md, DEPLOYMENT.md
 
 - **Chunking:** recursive on paragraph → line → sentence → word, ~800 characters with a 120-character word-aligned overlap. Chunks never cross PDF pages, so citations are exact (`paper.pdf — page 4`).
 - **Dense:** `all-MiniLM-L6-v2` embeddings (normalized, so inner product = cosine) in `faiss.IndexIDMap2(IndexFlatIP)`, keyed by SQLite chunk id so documents can be deleted. Exact search stays in the milliseconds up to ~10⁵–10⁶ vectors.
+- **PDF text:** extracted with `pdfminer.six` (falls back to `pypdf`). On tightly kerned or two-column PDFs pypdf glues words together ("ROC-AUC0.959", "realEdNetclickstreams"), which breaks keyword matching; pdfminer keeps the spaces.
+- **Document-level questions** ("who are the authors?", "what is the title?", "which university?", "what is this about?"): a title page lists names and affiliations but never contains the words *author*, *title* or *university*, so nothing in similarity search connects the question to it. The first-page chunks therefore get a deterministic **index-time context** ("First page of the document X. It gives the title, the authors who wrote it, their affiliations…") that is embedded, BM25-indexed and reranked together with the chunk, and shown to the LLM as a note. The cited passage text stays verbatim. Measured on a real two-column paper: the reranker score of the title page for "who are the authors" went from −11.3 to −3.5 (the evidence gate is −5), "who wrote this paper" −11.3 → −0.7, "what is the title" −11.4 → +0.2, while an unrelated question stayed at −11.5. Before the fix all five such questions were refused; after it all five are answered correctly with a page-1 citation, and the golden-set retrieval numbers are unchanged.
 - **Sparse:** BM25 with Lucene's non-negative IDF (the common Okapi IDF returns zero scores on small corpora; there's a test for that), with a tokenizer that keeps `0.959` and `roc-auc` intact. It is stored as an **inverted index split into per-document segments** with global statistics: 1.1 ms per query at 100k chunks, and adding or deleting a document re-indexes only that document.
 - **Fusion:** Reciprocal Rank Fusion, `Σ 1/(60 + rank)`. It uses ranks, not incomparable raw scores.
 - **Rerank:** `cross-encoder/ms-marco-MiniLM-L-6-v2` on the **top 10** fused candidates, with inputs capped at **256 tokens**. Measured against the earlier 20 × 512 setting on the golden set: identical hit@3/hit@5, slightly better MRR (0.800 vs 0.774), ~0.6 s instead of ~2 s on CPU. It sits behind a `Reranker` protocol (swap in Cohere/Voyage with one class), and failures fall back to fusion order.
@@ -268,7 +270,7 @@ cp .env.example .env                               # set GROQ_API_KEY (console.g
 uvicorn api:app --port 8000                        # API  → http://127.0.0.1:8000/docs
 streamlit run app.py                               # UI   → http://localhost:8501
 
-pytest                                             # 130 tests, no network needed
+pytest                                             # 137 tests, no network needed
 python -m eval.run_eval --retrieval-only           # retrieval ablation, no LLM calls
 python -m eval.run_eval --publish                  # full evaluation (uses your Groq quota)
 ```
@@ -309,7 +311,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Summary:
 - **Streamed drafts can change.** A draft that fails verification is replaced. That is correct, but users see the text change.
 - **The reranker didn't improve hit rates** on this corpus (it costs ~0.6 s of CPU per query); it's kept for the abstention signal and slightly better MRR.
 - **Free-tier rate limits** (8k tokens/min per model) dominate latency under load; the trace reports throttle time separately.
-- **Parsing:** no OCR (scanned PDFs are rejected with a clear error), no table-aware chunking, and `pypdf` can drop spaces between words in some PDFs (e.g. "realEdNetclickstreams").
+- **Parsing:** no OCR (scanned PDFs are rejected with a clear error) and no table-aware chunking. PDFs indexed before the pdfminer change keep their old extracted text until they are re-uploaded. The front-matter context assumes a document's first page carries its title/author information.
 - **No auth or multi-tenancy.**
 
 ## 18. Future improvements

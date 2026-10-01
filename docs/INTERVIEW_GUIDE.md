@@ -10,7 +10,7 @@ How to explain this project in a technical interview: what to say, what to show,
 >
 > The design came from a measurement. My first version always ran a critique-and-rewrite step, and my own eval showed it made answers *less* faithful at 5× the latency. So v2 makes the loop conditional, puts the PASS/FAIL decision in code instead of the LLM, and I evaluate baseline against adversarial on a golden dataset with an independent evaluator model. The honest result: with a strong generator, most answers already pass, so the loop rarely fires and doesn't measurably change quality on my test sets. What it buys is a calibrated per-answer verification signal; the judge caught 6 of 6 seeded faults.
 >
-> On the engineering side, it takes 100 MB uploads, indexed in the background with progress while chat keeps priority. BM25 is a segmented inverted index, 1 ms at 100k chunks. Everything is traced and logged per request. It's FastAPI + LangGraph + Streamlit, with 130 tests and a Docker image."
+> On the engineering side, it takes 100 MB uploads, indexed in the background with progress while chat keeps priority. BM25 is a segmented inverted index, 1 ms at 100k chunks. Everything is traced and logged per request. It's FastAPI + LangGraph + Streamlit, with 137 tests and a Docker image."
 
 ## 2. The 5-minute architecture walkthrough
 
@@ -73,6 +73,7 @@ How to frame it: *"My eval showed the always-on critic hurt, so I made it condit
 | BM25 | `app/retrieval/bm25.py` | Own BM25 with Lucene IDF; inverted index in per-document segments with global stats; copy-on-write snapshots. |
 | Fusion | `app/retrieval/fusion.py` | RRF, deterministic tie-break. |
 | Reranker | `app/retrieval/reranker.py` | Protocol; local cross-encoder (10 candidates × 256 tokens); failure → fusion order. |
+| Index-time context | `app/ingestion/context.py` | Deterministic description of front-matter chunks so document-level questions (authors, title) are retrievable; versioned index upgrade. |
 | Hybrid retriever + gate | `app/retrieval/hybrid.py` | Scores from every stage kept per chunk; incremental BM25 refresh; `evidence_check` decides abstention. |
 | Generator | `app/generation/generator.py` | Numbered context, optional token streaming, citation parsing, abstention detection, critique-guided regeneration. |
 | Judge / critic | `app/generation/judge.py`, `critic.py` | Scores from the LLM, verdict in code; critic only on FAIL, falls back to judge findings. |
@@ -187,6 +188,9 @@ There are two good stories. First: BM25 returned nothing on a one-document corpu
 **20. How is it deployed?**
 Two modes over the same code. The full architecture (FastAPI with SSE plus a separate Streamlit UI) runs anywhere Docker runs; one image serves both roles, or both in one container. The free public demo runs on Streamlit Community Cloud, which allows a single process, so the UI has an *embedded* backend: the same services and pipeline called in-process instead of over HTTP, selected by `RAG_BACKEND=embedded`. Because routes are thin and all logic lives in services, the embedded client is ~100 lines. The trade-off: a single shared process, ephemeral storage, and a memory limit I don't control.
 
+**21. A user asked "who are the authors?" and the bot said it had no evidence. What happened?**
+A good debugging story, told stage by stage. Storage was fine: chunks, vectors and BM25 entries all matched. Generation never ran: the evidence gate refused. Retrieval was the cause: the title page has names and affiliations but never the word "author", so BM25 matched nothing, the embedding similarity was 0.15 and the cross-encoder scored it −11. That's a general limit of chunk similarity: questions about the document itself ask for a role the text never states. The fix was index-time context: the first-page chunks get a sentence saying what they are (title, authors, affiliations, abstract), used for embedding, BM25 and reranking and shown to the LLM as a note, while the cited passage stays verbatim. I picked the wording by measuring reranker scores (−11.3 → −3.5, with an unrelated question unchanged at −11.5), confirmed five such questions end to end, checked the golden set didn't regress, and added an index version so old indexes upgrade themselves. The same trace exposed pypdf gluing words in two-column PDFs, so I switched extraction to pdfminer with pypdf as the fallback.
+
 ## 9. Scaling discussion (short form)
 
 1. **State:** SQLite/FAISS/BM25/metrics/ingestion worker are per process. Move them to Postgres + pgvector (or Qdrant), OpenSearch, Prometheus, and Redis for progress and priority signals.
@@ -205,7 +209,7 @@ Walk through the table in `docs/ARCHITECTURE.md` §3.11. Key phrases: "degrade, 
 - Threshold tuning from data (sweep vs retry rate and evaluator faithfulness).
 - Claim-level verification: split the answer into atomic claims and check each against its cited chunk (NLI model or LLM), instead of one holistic judge call. That would also allow streaming verification sentence by sentence.
 - Out-of-process ingestion (object storage + queue + GPU embedding workers), Postgres/pgvector, auth and multi-tenancy.
-- OCR for scanned PDFs; table-aware chunking; a better PDF text extractor (pypdf drops spaces in some files).
+- OCR for scanned PDFs; table-aware chunking; LLM-written context per chunk (contextual retrieval) to extend the front-matter fix to every section.
 - OpenTelemetry exporter and a Grafana dashboard for retry rate, throttle time and verdict distribution.
 
 ## 12. Live code walkthrough: open these files

@@ -40,6 +40,7 @@ from app.core.errors import (
 )
 from app.ingestion.chunking import chunk_pages
 from app.ingestion.cleaning import clean_text
+from app.ingestion.context import INDEX_VERSION, front_matter_context, is_front_matter
 from app.ingestion.parsers import PageText, detect_file_type, parse_document
 from app.retrieval.dense import DenseIndex
 from app.retrieval.embeddings import Embedder
@@ -69,6 +70,8 @@ class DocumentService:
         self._progress: dict[str, tuple[str, float | None]] = {}  # doc id -> (stage, fraction)
         self._cancelled: set[str] = set()
         self.activity = activity or QueryActivity()
+        if self.store.get_meta("index_version") is None and self.store.count_chunks() == 0:
+            self.store.set_meta("index_version", str(INDEX_VERSION))  # new store: nothing to upgrade
 
     def add_listener(self, callback: Callable[[], None]) -> None:
         """Register a callback fired after the corpus changes (e.g. BM25 update)."""
@@ -154,7 +157,10 @@ class DocumentService:
             hint = " (scanned PDFs need OCR, which is not supported)" if file_type == "pdf" else ""
             raise DocumentParseError(f"No extractable text found in '{filename}'{hint}.")
 
-        texts = [c.text for c in chunks]
+        for chunk in chunks:  # describe front-matter chunks so "who are the authors?" can find them
+            if is_front_matter(chunk.chunk_index, chunk.page):
+                chunk.context = front_matter_context(filename)
+        texts = [c.index_text for c in chunks]
         batches = []
         for start in range(0, len(texts), EMBED_BATCH):
             self._check_cancelled(document_id)
@@ -234,9 +240,10 @@ class DocumentService:
         Handles a missing/corrupt index file, a crash between the two writes, or
         a changed embedding model (dimension mismatch). Returns #vectors rebuilt.
         """
+        upgraded = self._upgrade_index_version()
         chunks = self.store.all_chunks()
         store_ids = {c.id for c in chunks}
-        if store_ids == self.dense_index.ids():
+        if not upgraded and store_ids == self.dense_index.ids():
             probe = self.embedder.embed(["dimension probe"]) if chunks else None
             if probe is None or probe.shape[1] == self.dense_index.dim:
                 return 0
@@ -245,9 +252,29 @@ class DocumentService:
             self.dense_index.reset()
             for start in range(0, len(chunks), EMBED_BATCH):
                 batch = chunks[start : start + EMBED_BATCH]
-                self.dense_index.add([c.id for c in batch], self.embedder.embed([c.text for c in batch]))
+                self.dense_index.add([c.id for c in batch], self.embedder.embed([c.index_text for c in batch]))
             self.dense_index.save()
         return len(chunks)
+
+    def _upgrade_index_version(self) -> bool:
+        """Bring a store built by an older version up to date. Returns True if vectors must be rebuilt.
+
+        v2 added index-time context for front-matter chunks. The context is deterministic, so it can
+        be back-filled for existing chunks; their vectors are then re-embedded by `sync_index`.
+        """
+        current = self.store.get_meta("index_version")
+        if current == str(INDEX_VERSION):
+            return False
+        chunks = self.store.all_chunks()
+        updates = [(front_matter_context(c.document_name), c.id) for c in chunks
+                   if is_front_matter(c.chunk_index, c.page) and not c.context]
+        if updates:
+            self.store.set_chunk_contexts(updates)
+        self.store.set_meta("index_version", str(INDEX_VERSION))
+        if chunks:
+            logger.warning("index upgraded", extra={"from_version": current or "1", "to_version": INDEX_VERSION,
+                                                    "chunks_contextualized": len(updates)})
+        return bool(chunks)
 
     def ingest_directory(self, directory: Path) -> list[DocumentInfo]:
         """Ingest every supported file in `directory`; duplicates are skipped."""

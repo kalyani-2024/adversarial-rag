@@ -18,6 +18,11 @@ class ChunkRecord(BaseModel):
     chunk_index: int
     page: int | None = Field(None, description="1-based page number, when the format has pages")
     text: str
+    context: str = Field("", description="Index-time description prepended for retrieval; not part of the passage")
+
+    @property
+    def index_text(self) -> str:
+        return f"{self.context}\n{self.text}" if self.context else self.text
 
 
 class DocumentInfo(BaseModel):

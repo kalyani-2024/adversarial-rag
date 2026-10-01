@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.ingestion.context import index_text
 from app.ingestion.parsers import PageText
 
 SEPARATORS = ("\n\n", "\n", ". ", " ")
@@ -22,6 +23,11 @@ class TextChunk:
     text: str
     chunk_index: int
     page: int | None
+    context: str = ""  # index-time description (see app/ingestion/context.py); never shown as the passage
+
+    @property
+    def index_text(self) -> str:
+        return index_text(self.context, self.text)
 
 
 def _split_recursive(text: str, chunk_size: int, separators: tuple[str, ...] = SEPARATORS) -> list[str]:

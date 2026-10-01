@@ -79,6 +79,12 @@ def _parse_markdown(content: bytes) -> ParsedDocument:
 
 
 def _parse_pdf(content: bytes) -> ParsedDocument:
+    """Extract text page by page.
+
+    pdfminer.six is tried first: its layout analysis keeps word spacing in tightly kerned and
+    two-column PDFs, where pypdf glues words together ("ROC-AUC0.959", "realEdNetclickstreams"),
+    which breaks keyword matching. pypdf validates the file (encryption) and is the fallback.
+    """
     from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(content))
@@ -87,8 +93,23 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
             reader.decrypt("")  # many "encrypted" PDFs use an empty user password
         except Exception as exc:
             raise DocumentParseError("PDF is password-protected.") from exc
-    pages = [PageText(page.extract_text() or "", page=i + 1) for i, page in enumerate(reader.pages)]
-    return ParsedDocument(file_type="pdf", pages=pages, num_pages=len(pages))
+    num_pages = len(reader.pages)
+
+    texts = _pdfminer_pages(content)
+    if texts is None or len(texts) != num_pages or not any(t.strip() for t in texts):
+        texts = [page.extract_text() or "" for page in reader.pages]
+    return ParsedDocument(file_type="pdf", pages=[PageText(t, page=i + 1) for i, t in enumerate(texts)], num_pages=num_pages)
+
+
+def _pdfminer_pages(content: bytes) -> list[str] | None:
+    try:
+        from pdfminer.high_level import extract_pages
+        from pdfminer.layout import LAParams, LTTextContainer
+
+        return ["".join(el.get_text() for el in layout if isinstance(el, LTTextContainer))
+                for layout in extract_pages(io.BytesIO(content), laparams=LAParams())]
+    except Exception:  # not installed, or a PDF feature pdfminer cannot handle
+        return None
 
 
 def _parse_docx(content: bytes) -> ParsedDocument:

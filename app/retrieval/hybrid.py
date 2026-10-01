@@ -90,6 +90,7 @@ class HybridRetriever:
                     chunk_index=rec.chunk_index,
                     page=rec.page,
                     text=rec.text,
+                    context=rec.context,
                     dense_score=dense_scores.get(item.id),
                     dense_rank=item.ranks.get("dense"),
                     bm25_score=bm25_scores.get(item.id),
@@ -103,7 +104,7 @@ class HybridRetriever:
         if use_reranker and self.reranker is not None and candidates:
             t1 = time.perf_counter()
             try:
-                scores = self.reranker.score(query, [c.text for c in candidates])
+                scores = self.reranker.score(query, [c.index_text for c in candidates])
                 for c, sc in zip(candidates, scores):
                     c.rerank_score = sc
                 candidates.sort(key=lambda c: c.rerank_score, reverse=True)
