@@ -194,9 +194,11 @@ Levers: `MAX_RETRIES` (0 = verification only, no correction), thresholds and `FA
 
 ## 12. Chat UI and logs
 
-- **Chat:** question, streamed answer, and numbered citation badges next to each sentence. A short status line shows the current stage ("Searching your documents…", "Writing…", "Checking the answer…", "Refining the answer…"). LaTeX formulas in answers render as math.
-- **Citations:** hovering or clicking a badge opens a popover with the source document, page/chunk and the **full passage** (scrollable, spanning the answer width). A collapsed **Sources** list under each answer repeats the complete passages.
-- **Sidebar:** new chat; document upload (≤ 100 MB) with live indexing progress, failures and delete/cancel; pipeline settings (mode, top-k, reranker, query rewrite); reliability settings (max retries, the three thresholds, fail on any unsupported claim). Settings are sent with every question.
+- **Design:** the "Chat with inline citations" layout: Geist / Geist Mono, a neutral grey palette, a 248 px sidebar, a 52 px top bar with a `Documents / <first question>` breadcrumb, and a 680 px message column. Styles live in one CSS block in `ui/streamlit_app.py`; the theme is in `.streamlit/config.toml`.
+- **Chat:** right-aligned user bubble; the answer streams under a status line that shows the current stage ("Searching your documents…", "Writing…", "Checking the answer…", "Refining the answer…") and ends as a summary from real data, e.g. "Searched 2 documents · 5 passages · 1.4s". LaTeX formulas render as math.
+- **Citations:** each `[n]` is a monospace chip. Hovering or focusing it opens a popover with the source document, page/chunk and the **full passage** (scrollable, spanning the answer width). Under the answer, a **sources card** lists each cited passage with a file-type tag (PDF / DOC / MD / TXT), page or chunk, and a snippet; clicking a row expands the full passage.
+- **Sidebar:** new chat; document upload (≤ 100 MB) with file-type tags, live indexing progress, failures and delete/cancel; pipeline settings (mode, top-k, reranker, query rewrite); reliability settings (max retries, the three thresholds, fail on any unsupported claim). Settings are sent with every question.
+- **Not implemented from the design** (no backend for them): workspace switcher, search, chat history list, user profile, Share, copy / thumbs / retry, "View trace", and the knowledge-base picker in the composer.
 - **Diagnostics are not shown to the user.** The API logs them as JSON lines keyed by `request_id` (`app/observability/query_log.py`):
 
 | Log message | Contents |
