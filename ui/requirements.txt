@@ -8,9 +8,8 @@ pydantic>=2.7,<3
 pydantic-settings>=2.3,<3
 langgraph>=0.2
 groq>=0.11
-# Pinned to the tested pair. transformers 5.18.0 registers lazy image-processor modules that import
-# torchvision; Streamlit's file watcher touches every loaded module, so each page load logged ~100
-# "ModuleNotFoundError: No module named 'torchvision'" tracebacks (harmless, but slow and noisy).
+# Pinned to the versions the project was tested with, so a cloud build cannot pick up an untested release.
+# (This does not affect the 'No module named torchvision' log noise; see .streamlit/config.toml.)
 sentence-transformers==6.1.0
 transformers==5.17.0
 faiss-cpu>=1.8

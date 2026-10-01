@@ -10,6 +10,11 @@ font = "sans serif"
 [server]
 headless = true
 maxUploadSize = 100
+# The file watcher probes every loaded module. transformers registers lazy image-processor alias
+# modules that import torchvision (not installed, not used) when probed, which logged ~100
+# "No module named 'torchvision'" tracebacks per page load in embedded mode. Trade-off: no
+# auto-rerun on save; for local UI work run with `--server.fileWatcherType auto`.
+fileWatcherType = "none"
 
 [browser]
 gatherUsageStats = false
